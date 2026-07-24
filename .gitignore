@@ -1,0 +1,33 @@
+# Dependencies (contains prebuilt native .node binaries and the whole Electron runtime)
+node_modules/
+
+# Build output: installers, portable exe, unpacked app, blockmaps
+dist/
+out/
+
+# Generated icon -- rebuilt from build/make-icon.ps1, so it isn't source.
+# `npm run dist` regenerates it, so a fresh clone still builds with the real icon.
+build/icon.ico
+
+# Binaries and executables
+*.exe
+*.dll
+*.node
+*.msi
+*.appx
+*.blockmap
+*.7z
+*.zip
+*.tar.gz
+*.pdb
+
+# Logs and debug output
+*.log
+npm-debug.log*
+builder-debug.yml
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp

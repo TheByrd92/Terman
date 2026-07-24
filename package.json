@@ -1,0 +1,68 @@
+{
+  "name": "terman",
+  "version": "1.0.0",
+  "description": "Dead-simple terminal manager: tabbed terminals in one window, global hotkeys to open more.",
+  "main": "src/main.js",
+  "author": "Ian Byrd",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "icon": "pwsh -NoProfile -File build/make-icon.ps1",
+    "dist": "npm run icon && electron-builder --win",
+    "dist:installer": "npm run icon && electron-builder --win nsis",
+    "dist:portable": "npm run icon && electron-builder --win portable",
+    "pack": "npm run icon && electron-builder --dir"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.12",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.ianbyrd.terman",
+    "productName": "Terman",
+    "copyright": "Copyright © 2026 Ian Byrd",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "!**/*.map",
+      "!**/{.eslintrc,.editorconfig,.gitignore}"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "**/node_modules/@lydell/**"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Terman",
+      "artifactName": "Terman-${version}-Setup.${ext}",
+      "uninstallDisplayName": "Terman ${version}",
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "Terman-${version}-Portable.${ext}"
+    }
+  }
+}

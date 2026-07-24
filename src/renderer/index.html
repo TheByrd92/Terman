@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- file:// pages get an opaque origin, so 'self' can't be used to gate scripts here.
+       Allow local files, block anything that would reach the network. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' file: 'unsafe-inline' data:; connect-src 'none'; object-src 'none';" />
+  <title>Terman</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="tabbar">
+      <div id="tabs" role="tablist" aria-label="Open terminals"></div>
+      <div id="tabbar-actions">
+        <button id="btn-new" class="icon-btn" title="New terminal (default profile)">+</button>
+        <button id="btn-pick" class="icon-btn" title="Open an executable&hellip;">&#8230;</button>
+        <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+      </div>
+    </header>
+
+    <main id="panes">
+      <div id="empty-state">
+        <h1>Terman</h1>
+        <p class="empty-sub">No terminals open.</p>
+        <div class="empty-keys">
+          <div><kbd id="kbd-new">Ctrl</kbd> new terminal</div>
+          <div><kbd id="kbd-pick">Ctrl</kbd> pick an executable</div>
+        </div>
+        <button id="empty-new" class="primary-btn">New terminal</button>
+      </div>
+    </main>
+
+    <footer id="statusbar">
+      <span id="status-left"></span>
+      <span id="status-right"></span>
+    </footer>
+  </div>
+
+  <div id="settings-overlay" class="overlay" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="dialog-head">
+        <h2 id="settings-title">Settings</h2>
+        <button id="settings-close" class="icon-btn" title="Close">&times;</button>
+      </div>
+
+      <div class="dialog-body">
+        <section>
+          <h3>Default terminal</h3>
+          <label class="row">
+            <span>Opened by the new-terminal hotkey</span>
+            <select id="set-default-profile"></select>
+          </label>
+          <label class="row">
+            <span>Folder new terminals open in</span>
+            <span class="path-input">
+              <input id="set-default-cwd" type="text" spellcheck="false" placeholder="(your home folder)" />
+              <button id="btn-browse-cwd" class="mini-btn">Browse&hellip;</button>
+            </span>
+          </label>
+          <p class="hint">
+            Leave blank to start in your home folder. A profile with its own <code>cwd</code>
+            in settings.json overrides this.
+          </p>
+        </section>
+
+        <section>
+          <h3>Hotkeys</h3>
+          <label class="row">
+            <span>New default terminal</span>
+            <input id="set-hk-new" type="text" spellcheck="false" placeholder="Control+`" />
+          </label>
+          <label class="row">
+            <span>Pick an executable</span>
+            <input id="set-hk-pick" type="text" spellcheck="false" placeholder="Control+Shift+`" />
+          </label>
+          <label class="row checkbox">
+            <input id="set-global" type="checkbox" />
+            <span>System-wide (work when Terman isn't focused)</span>
+          </label>
+          <p class="hint">
+            Electron accelerator syntax &mdash; e.g. <code>Control+`</code>, <code>Alt+Shift+T</code>,
+            <code>Super+1</code>. System-wide hotkeys take the combo from every other app;
+            <code>Ctrl+`</code> will stop toggling VS Code's terminal while Terman runs. Uncheck to
+            limit them to this window.
+          </p>
+          <p id="hk-warn" class="warn" hidden></p>
+        </section>
+
+        <section>
+          <h3>Executable picker</h3>
+          <label class="row">
+            <span>Folder the picker opens in</span>
+            <span class="path-input">
+              <input id="set-picker-root" type="text" spellcheck="false" />
+              <button id="btn-browse-root" class="mini-btn">Browse&hellip;</button>
+            </span>
+          </label>
+        </section>
+
+        <section>
+          <h3>Appearance</h3>
+          <label class="row">
+            <span>Font size</span>
+            <input id="set-font-size" type="number" min="8" max="32" step="1" />
+          </label>
+          <label class="row">
+            <span>Font family</span>
+            <input id="set-font-family" type="text" spellcheck="false" />
+          </label>
+          <label class="row">
+            <span>Scrollback lines</span>
+            <input id="set-scrollback" type="number" min="100" max="200000" step="100" />
+          </label>
+        </section>
+
+        <section>
+          <h3>Profiles</h3>
+          <div id="profile-list"></div>
+          <button id="btn-add-profile" class="mini-btn">Add profile&hellip;</button>
+        </section>
+
+        <section>
+          <h3>Behaviour</h3>
+          <label class="row checkbox">
+            <input id="set-confirm-close" type="checkbox" />
+            <span>Ask before closing a tab whose process is still running</span>
+          </label>
+        </section>
+      </div>
+
+      <div class="dialog-foot">
+        <button id="btn-reveal" class="mini-btn" title="Show settings.json in Explorer">settings.json</button>
+        <span class="spacer"></span>
+        <button id="settings-cancel" class="mini-btn">Cancel</button>
+        <button id="settings-save" class="primary-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" hidden></div>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
