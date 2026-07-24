@@ -56,7 +56,8 @@ html, body {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
-  max-width: 220px;
+  /* roomy enough for a remote tmux title like "web-01: deploy (logs)" */
+  max-width: 260px;
   padding: 4px 6px 4px 9px;
   background: var(--bg-tab);
   border: 1px solid transparent;

@@ -80,15 +80,40 @@ function splitArgs(str) {
 }
 
 /**
- * Shells announce their state via OSC 0. MSYS bash opens by reporting its own
+ * Shells announce their state via OSC 0/2. MSYS bash opens by reporting its own
  * exe path, which is noise next to the profile name, so ignore that case.
+ *
+ * Anything else is kept whole. Remote titles are the valuable ones -- tmux with
+ * `set-titles on` reports e.g. "web-01: deploy (logs)" straight through ssh, and
+ * clipping that at a fixed character count loses the session name. The tab has a
+ * CSS max-width with text-overflow:ellipsis, so it truncates to the pixels
+ * actually available and the full string stays in the tooltip. The cap here only
+ * guards against a pathological multi-kilobyte title.
  */
 function prettyTitle(raw, session) {
   let t = String(raw || '').trim();
   if (!t) return session.name;
   if (t.includes('\\')) t = basename(t);
   if (t.toLowerCase() === basename(session.exe).toLowerCase()) return session.name;
-  return t.length > 30 ? `${t.slice(0, 29)}\u2026` : t;
+  return t.length > 200 ? `${t.slice(0, 199)}\u2026` : t;
+}
+
+/**
+ * A leading "host: " on a tmux title (from set-titles-string "#h: #S (#W)") is the
+ * least interesting part on a narrow tab -- you already know which box you opened,
+ * and an IP eats the width the session name needs. Drop it from the label; the full
+ * title including the host stays in the tab tooltip.
+ *
+ * Requires a hostname-shaped prefix of 2+ chars followed by a space, so a bare
+ * Windows drive ("D: foo") or a colon-free path ("/d/Local_Code") is left alone.
+ */
+const HOST_PREFIX = /^([A-Za-z0-9_.-]{2,}):[ \t]+(?=\S)/;
+
+function tabLabel(title, session) {
+  const t = String(title || '').trim();
+  if (!t) return session.name;
+  const stripped = t.replace(HOST_PREFIX, '');
+  return stripped || t;
 }
 
 /** "Control+Shift+`" -> "Ctrl+Shift+`" for display. */
@@ -133,14 +158,21 @@ function renderTabs() {
     const tab = document.createElement('div');
     tab.className = `tab${t.id === activeId ? ' active' : ''}${t.alive ? '' : ' dead'}`;
     tab.setAttribute('role', 'tab');
-    tab.title = `${t.exe}${t.cwd ? `\n${t.cwd}` : ''}`;
+    // Full title first -- it carries the host prefix the label strips, plus anything
+    // the label ellipsised away.
+    tab.title = [
+      t.title !== t.name ? t.title : null,
+      t.exe,
+      t.cwd,
+      t.alive ? null : '(process exited)',
+    ].filter(Boolean).join('\n');
 
     const dot = document.createElement('span');
     dot.className = 'tab-dot';
 
     const label = document.createElement('span');
     label.className = 'tab-label';
-    label.textContent = t.title;
+    label.textContent = t.label;
 
     const close = document.createElement('button');
     close.className = 'tab-close';
@@ -231,7 +263,8 @@ async function newTerminal(spec = {}) {
     name: res.name,
     exe: res.exe,
     cwd: res.cwd,
-    title: res.name,
+    title: res.name,   // full title, as reported by the shell
+    label: res.name,   // what the tab shows: title minus the "host: " prefix
     alive: true,
     term,
     fit,
@@ -244,8 +277,10 @@ async function newTerminal(spec = {}) {
   term.onResize(({ cols, rows }) => api.resizePty(session.id, cols, rows));
   term.onTitleChange((title) => {
     const next = prettyTitle(title, session);
-    if (next !== session.title) {
+    const nextLabel = tabLabel(next, session);
+    if (next !== session.title || nextLabel !== session.label) {
       session.title = next;
+      session.label = nextLabel;
       renderTabs();
     }
   });
@@ -261,7 +296,7 @@ async function closeTab(id) {
   if (t.alive && settings.confirmCloseLive) {
     const ok = await api.confirm({
       title: 'Close terminal',
-      message: `Close "${t.title}"?`,
+      message: `Close "${t.label}"?`,
       detail: `${t.exe} is still running. Closing the tab terminates it.`,
     });
     if (!ok) return;
@@ -281,10 +316,13 @@ async function closeTab(id) {
   }
 }
 
+/** Returns true if the active tab actually changed, so callers know whether to
+ *  swallow the keypress -- with one tab open the key must reach the shell. */
 function cycleTab(delta) {
-  if (tabs.length < 2) return;
+  if (tabs.length < 2) return false;
   const i = tabs.findIndex((t) => t.id === activeId);
   activate(tabs[(i + delta + tabs.length) % tabs.length].id);
+  return true;
 }
 
 async function pickAndOpen() {
@@ -516,6 +554,21 @@ api.onHotkeyStatus((status) => {
   }
 });
 
+/**
+ * Tab switching lives on Ctrl+Shift+Arrow rather than a two-key chord.
+ *
+ * Two reasons it has to be a real modifier: the whole combo can be swallowed here,
+ * so nothing leaks through to the shell (a bare PageUp can't be -- there's no way to
+ * know a chord is coming, so it would page vim/less/tmux on the way past). And
+ * Ctrl+Shift+* is the space terminal emulators conventionally claim for themselves,
+ * so it doesn't collide with readline or TUI bindings the way Alt+Arrow does.
+ *
+ * Kept window-local on purpose. It could be a global accelerator now that it has
+ * modifiers, but tab switching is only meaningful when Terman is focused, and
+ * registering it system-wide would steal the combo from every other app.
+ */
+const TAB_STEP = { ArrowRight: 1, ArrowLeft: -1 };
+
 // Same combos, handled in-window. These only ever fire when the global
 // registration is off or failed; otherwise the OS consumes the keypress first.
 document.addEventListener('keydown', (e) => {
@@ -524,6 +577,16 @@ document.addEventListener('keydown', (e) => {
   if (!sui.overlay.hidden) {
     if (e.key === 'Escape') { e.preventDefault(); closeSettings(); }
     return;
+  }
+
+  // Swallow only if a tab switch actually happened; with a single tab open the
+  // keypress still belongs to the shell.
+  if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && TAB_STEP[e.key] !== undefined) {
+    if (cycleTab(TAB_STEP[e.key])) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
   }
 
   if (matchesAccel(e, parseAccel(settings.hotkeys.newDefault))) {

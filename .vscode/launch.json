@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // F5 default: runs Terman with main-process breakpoints live.
+      // --dev opens DevTools and turns on the spawn/hotkey logging in main.js.
+      "name": "Terman",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "args": [".", "--dev", "--remote-debugging-port=9222"],
+      // send main-process console.log to the Debug Console instead of swallowing it
+      "outputCapture": "std",
+      "sourceMaps": false,
+      "smartStep": true,
+      "skipFiles": ["<node_internals>/**"],
+      "presentation": { "order": 1 }
+    },
+    {
+      // Breakpoints in src/renderer/*. Start "Terman" first, then run this.
+      "name": "Terman: attach to renderer",
+      "type": "chrome",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}/src/renderer",
+      "urlFilter": "file://*/index.html",
+      "timeout": 30000,
+      "presentation": { "order": 2 }
+    }
+  ],
+  "compounds": [
+    {
+      // Both at once. If the attach ever loses the race with startup, launch
+      // "Terman" on its own and attach afterwards.
+      "name": "Terman: main + renderer",
+      "configurations": ["Terman", "Terman: attach to renderer"],
+      "stopAll": true,
+      "presentation": { "order": 3 }
+    }
+  ]
+}
