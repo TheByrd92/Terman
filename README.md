@@ -1,5 +1,7 @@
 # Terman
 
+[![Build portable](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml/badge.svg)](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml)
+
 A small terminal manager for Windows. One window, tabbed terminals, two global hotkeys.
 
 - <kbd>Ctrl</kbd>+<kbd>`</kbd> — open a new terminal using the default profile
@@ -30,6 +32,34 @@ install folder, and it installs per-user (no admin prompt) by default. Uninstall
 
 `npm run dist:installer` and `npm run dist:portable` build just one target;
 `npm run pack` produces an unpacked folder in `dist\win-unpacked\` without any installer.
+
+### Downloading a build from CI
+
+`.github/workflows/build-portable.yml` builds the portable exe on every push to `main`
+(and on pull requests) using a `windows-latest` runner — a Windows host is required, since
+this packages a Windows Electron app plus a `win32-x64` native PTY.
+
+**Per-push builds** land as a workflow artifact. Open the run under the repo's *Actions*
+tab and download `Terman-<version>-Portable` from the summary page. GitHub zips artifacts
+automatically, so you get a `.zip` with the exe inside. Kept 90 days. Downloading an
+artifact requires being signed in to GitHub.
+
+**Tagged builds** additionally publish a GitHub Release, which is the only way to hand out
+a link that works without a GitHub account:
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+The version in the artifact name comes from `package.json`, so bump that in the same commit
+you tag.
+
+The workflow caches the Electron download (~270 MB) keyed on `package-lock.json`, builds
+with `CSC_IDENTITY_AUTO_DISCOVERY=false` since there's no signing certificate in CI, and
+fails loudly if the exe is missing or implausibly small rather than uploading nothing. To
+ship the installer as well, add `dist/Terman-*-Setup.exe` to the upload paths and switch
+the build step to `npm run dist`.
 
 The app icon is generated, not checked in as binary art — `npm run icon` regenerates
 `build\icon.ico` from `build\make-icon.ps1`.
