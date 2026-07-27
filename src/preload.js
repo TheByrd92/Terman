@@ -20,6 +20,9 @@ contextBridge.exposeInMainWorld('terman', {
   resizePty: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
   killPty: (id) => ipcRenderer.send('pty:kill', id),
 
+  sshStatus: () => ipcRenderer.invoke('ssh:status'),
+  sshUnlockSpec: () => ipcRenderer.invoke('ssh:unlock-spec'),
+
   pickExe: () => ipcRenderer.invoke('dialog:pick-exe'),
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),
   confirm: (opts) => ipcRenderer.invoke('dialog:confirm', opts),

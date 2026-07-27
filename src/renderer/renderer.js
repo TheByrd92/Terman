@@ -13,6 +13,7 @@ const el = {
   toast: document.getElementById('toast'),
   kbdNew: document.getElementById('kbd-new'),
   kbdPick: document.getElementById('kbd-pick'),
+  sshPill: document.getElementById('ssh-pill'),
 };
 
 /** @type {Array<{id:number,name:string,exe:string,cwd:string,title:string,alive:boolean,term:any,fit:any,pane:HTMLElement,tab:HTMLElement}>} */
@@ -330,6 +331,65 @@ async function pickAndOpen() {
   if (exe) await newTerminal({ exe, args: [] });
 }
 
+// ---------------------------------------------------------------- ssh agent
+
+/**
+ * Badge in the status bar: locked (no keys yet) or unlocked (n keys held).
+ * Clicking runs ssh-add in a real tab, so the passphrase prompt is a tty prompt
+ * and the secret never travels through Terman.
+ */
+async function refreshSshPill() {
+  let s;
+  try {
+    s = await api.sshStatus();
+  } catch {
+    el.sshPill.hidden = true;
+    return;
+  }
+
+  if (!s || !s.enabled) {
+    el.sshPill.hidden = true;
+    return;
+  }
+
+  el.sshPill.hidden = false;
+  el.sshPill.classList.remove('locked', 'unlocked', 'off');
+
+  if (!s.running) {
+    el.sshPill.classList.add('off');
+    el.sshPill.textContent = 'SSH agent off';
+    el.sshPill.title = s.error ? `ssh-agent unavailable: ${s.error}` : 'ssh-agent not running';
+    return;
+  }
+
+  if (s.keyCount > 0) {
+    el.sshPill.classList.add('unlocked');
+    el.sshPill.textContent = `SSH ${s.keyCount} key${s.keyCount === 1 ? '' : 's'}`;
+    el.sshPill.title = 'Agent holds your key. New terminals connect without prompting.\nClick to add another key.';
+  } else {
+    el.sshPill.classList.add('locked');
+    el.sshPill.textContent = 'SSH locked';
+    el.sshPill.title = 'Agent is running but holds no key.\nClick to unlock - the passphrase prompt opens in a new tab.';
+  }
+}
+
+async function unlockSsh() {
+  const spec = await api.sshUnlockSpec();
+  if (!spec) {
+    toast('ssh-agent is not available.');
+    return;
+  }
+  const session = await newTerminal({ exe: spec.exe, args: spec.args });
+  if (!session) return;
+  // ssh-add exits once the passphrase is accepted; re-check when it does.
+  const done = api.onPtyExit((id) => {
+    if (id === session.id) {
+      done();
+      setTimeout(refreshSshPill, 150);
+    }
+  });
+}
+
 // ---------------------------------------------------------------- settings ui
 
 const sui = {
@@ -344,6 +404,7 @@ const sui = {
   fontFamily: document.getElementById('set-font-family'),
   scrollback: document.getElementById('set-scrollback'),
   confirmClose: document.getElementById('set-confirm-close'),
+  sshEnabled: document.getElementById('set-ssh-enabled'),
   profileList: document.getElementById('profile-list'),
   warn: document.getElementById('hk-warn'),
 };
@@ -438,6 +499,7 @@ function openSettings() {
   sui.fontFamily.value = settings.fontFamily;
   sui.scrollback.value = settings.scrollback;
   sui.confirmClose.checked = !!settings.confirmCloseLive;
+  sui.sshEnabled.checked = !!(settings.sshAgent && settings.sshAgent.enabled);
   api.hotkeyStatus().then(showHotkeyWarning);
   sui.overlay.hidden = false;
 }
@@ -469,10 +531,12 @@ async function saveSettings() {
     fontFamily: sui.fontFamily.value.trim(),
     scrollback: Number(sui.scrollback.value),
     confirmCloseLive: sui.confirmClose.checked,
+    sshAgent: { ...(settings.sshAgent || {}), enabled: sui.sshEnabled.checked },
   });
 
   applyAppearance();
   applyHotkeyHints();
+  refreshSshPill();
   closeSettings();
   toast('Settings saved.', false);
 }
@@ -504,6 +568,7 @@ document.getElementById('settings-close').addEventListener('click', closeSetting
 document.getElementById('settings-cancel').addEventListener('click', closeSettings);
 document.getElementById('settings-save').addEventListener('click', saveSettings);
 document.getElementById('btn-reveal').addEventListener('click', () => api.revealSettings());
+el.sshPill.addEventListener('click', unlockSsh);
 
 document.getElementById('btn-browse-root').addEventListener('click', async () => {
   const dir = await api.pickFolder(sui.pickerRoot.value);
@@ -638,6 +703,7 @@ let booted = false;
   booted = true;
   settings = await api.getSettings();
   applyHotkeyHints();
+  refreshSshPill();
   renderTabs();
   // Only open the startup terminal if nothing raced ahead of us (e.g. a hotkey
   // fired while settings were still loading).
