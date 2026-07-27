@@ -14,23 +14,32 @@ const debug = (...a) => { if (DEV) console.log(...a); };
 
 let sshAgent = null;
 
-/** id -> { proc, profileName, exe, alive } */
+/** id -> { proc, profileName, exe, alive, wc } -- wc is the window owning the tab */
 const sessions = new Map();
 let nextId = 1;
-let win = null;
 /** Populated after each hotkey (re)registration so the UI can warn about conflicts. */
 let hotkeyStatus = { newDefault: null, pickExe: null, enabled: true };
+
+/**
+ * Every open window. They deliberately share one process: that way there is a single
+ * ssh-agent (so you unlock once, not once per window), one owner of the global
+ * hotkeys, and one writer for settings.json. The single-instance lock stays for the
+ * same reason -- launching the exe again asks this process for another window.
+ */
+const windows = new Set();
+/** Last window to take focus, so a hotkey pressed elsewhere in the OS has a target. */
+let lastFocused = null;
 
 // ---------------------------------------------------------------- window
 
 function createWindow() {
-  win = new BrowserWindow({
+  const win = new BrowserWindow({
     width: 1100,
     height: 700,
     minWidth: 520,
     minHeight: 320,
     backgroundColor: '#12131a',
-    title: 'Terman',
+    title: `Terman ${app.getVersion()}`,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -40,13 +49,18 @@ function createWindow() {
     },
   });
 
-  Menu.setApplicationMenu(null);
+  const wc = win.webContents;
+  windows.add(win);
+  lastFocused = win;
+
+  // The page's own <title> would otherwise replace the version in the title bar.
+  win.on('page-title-updated', (e) => e.preventDefault());
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   if (DEV) {
-    win.webContents.openDevTools({ mode: 'detach' });
+    wc.openDevTools({ mode: 'detach' });
     // Electron >=33 passes a details object; older versions used positional args.
-    win.webContents.on('console-message', (a, b, c, d, e) => {
+    wc.on('console-message', (a, b, c, d, e) => {
       const d0 = (a && typeof a === 'object' && 'message' in a) ? a : null;
       const msg = d0 ? d0.message : c;
       const level = d0 ? d0.level : ['debug', 'info', 'warn', 'error'][b] || b;
@@ -56,34 +70,65 @@ function createWindow() {
   }
 
   // F12 toggles devtools regardless of how the app was launched.
-  win.webContents.on('before-input-event', (_e, input) => {
-    if (input.type === 'keyDown' && input.key === 'F12') win.webContents.toggleDevTools();
+  wc.on('before-input-event', (_e, input) => {
+    if (input.type === 'keyDown' && input.key === 'F12') wc.toggleDevTools();
   });
 
+  win.on('focus', () => { lastFocused = win; });
+
   win.on('closed', () => {
-    win = null;
-    for (const id of [...sessions.keys()]) killSession(id);
+    windows.delete(win);
+    if (lastFocused === win) lastFocused = null;
+    // This window's terminals only -- other windows keep theirs.
+    for (const [id, s] of [...sessions]) {
+      if (s.wc === wc) killSession(id);
+    }
   });
 
   // Open target=_blank / clicked links in the real browser, not a child window.
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  wc.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  debug(`[terman] window opened (${windows.size} open)`);
+  return win;
 }
 
-function focusWindow() {
-  if (!win) {
-    createWindow();
-    return;
-  }
+/**
+ * Where a global hotkey should act: the focused window, else the last one focused,
+ * else a new one. Without the fallback, a hotkey pressed while another app has focus
+ * would have nowhere to go.
+ */
+function summonWindow() {
+  let win = BrowserWindow.getFocusedWindow();
+  if (!win || !windows.has(win)) win = lastFocused;
+  if (!win || win.isDestroyed()) win = createWindow();
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
+  return win;
 }
 
-function send(channel, ...args) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, ...args);
+function sendTo(wc, channel, ...args) {
+  if (wc && !wc.isDestroyed()) wc.send(channel, ...args);
+}
+
+/** Deliver once the renderer exists to receive it -- a just-created window is still
+ *  loading, and a message sent now would go nowhere. */
+function sendWhenReady(win, channel, ...args) {
+  const wc = win.webContents;
+  if (wc.isLoading()) wc.once('did-finish-load', () => sendTo(wc, channel, ...args));
+  else sendTo(wc, channel, ...args);
+}
+
+function broadcast(channel, ...args) {
+  for (const win of windows) sendTo(win.webContents, channel, ...args);
+}
+
+/** The window that sent an IPC message, for parenting its dialogs. */
+function senderWindow(event) {
+  return BrowserWindow.fromWebContents(event.sender) || lastFocused;
 }
 
 // ---------------------------------------------------------------- pty
@@ -107,9 +152,10 @@ function resolveCwd(requested, profile) {
 
 /**
  * Spawn a PTY. `spec` is either { profileId } or an ad-hoc { exe, args, cwd }
- * (used by the pick-an-exe hotkey).
+ * (used by the pick-an-exe hotkey). `wc` is the window that owns the tab -- its
+ * output goes only there, and it dies with that window.
  */
-function createSession(spec = {}) {
+function createSession(spec = {}, wc = null) {
   const profile = spec.profileId ? settings.profile(spec.profileId) : settings.defaultProfile();
   const exe = spec.exe || (profile && profile.exe);
   if (!exe) throw new Error('No shell configured. Open Settings and add a profile.');
@@ -138,13 +184,13 @@ function createSession(spec = {}) {
   debug(`[terman] spawn id=${id} exe=${exe} cwd=${cwd} spec=${JSON.stringify(spec)}`);
   const name = spec.exe ? path.basename(exe) : (profile ? profile.name : path.basename(exe));
 
-  sessions.set(id, { proc, profileName: name, exe, alive: true });
+  sessions.set(id, { proc, profileName: name, exe, alive: true, wc });
 
-  proc.onData((data) => send('pty:data', id, data));
+  proc.onData((data) => sendTo(wc, 'pty:data', id, data));
   proc.onExit(({ exitCode, signal }) => {
     const s = sessions.get(id);
     if (s) s.alive = false;
-    send('pty:exit', id, exitCode, signal);
+    sendTo(wc, 'pty:exit', id, exitCode, signal);
   });
 
   return { id, name, exe, cwd };
@@ -171,7 +217,7 @@ function registerHotkeys() {
   hotkeyStatus = { newDefault: null, pickExe: null, enabled: !!globalHotkeys };
 
   if (!globalHotkeys) {
-    send('hotkey:status', hotkeyStatus);
+    broadcast('hotkey:status', hotkeyStatus);
     return;
   }
 
@@ -187,17 +233,16 @@ function registerHotkeys() {
     }
   };
 
+  // Both act on the window the hotkey summoned, not on every window.
   bind(hotkeys.newDefault, 'newDefault', () => {
-    focusWindow();
-    send('shortcut:new-default');
+    sendWhenReady(summonWindow(), 'shortcut:new-default');
   });
   bind(hotkeys.pickExe, 'pickExe', () => {
-    focusWindow();
-    send('shortcut:pick-exe');
+    sendWhenReady(summonWindow(), 'shortcut:pick-exe');
   });
 
   debug(`[terman] hotkeys ${JSON.stringify({ ...hotkeyStatus, accels: hotkeys })}`);
-  send('hotkey:status', hotkeyStatus);
+  broadcast('hotkey:status', hotkeyStatus);
 }
 
 // ---------------------------------------------------------------- ipc
@@ -213,6 +258,9 @@ ipcMain.handle('settings:save', (_e, patch) => {
   if (data.sshAgent.enabled && !sshAgent) startSshAgent();
   else if (!data.sshAgent.enabled && sshAgent) { sshAgent.stop(); sshAgent = null; }
 
+  // One settings file, several windows: the others would otherwise keep applying
+  // the font size and hotkey hints they were opened with.
+  broadcast('settings:changed', data);
   return data;
 });
 
@@ -223,13 +271,15 @@ ipcMain.handle('settings:reveal', () => {
 
 ipcMain.handle('settings:path', () => settings.file);
 
-ipcMain.handle('pty:create', (_e, spec) => {
+ipcMain.handle('pty:create', (e, spec) => {
   try {
-    return { ok: true, ...createSession(spec) };
+    return { ok: true, ...createSession(spec, e.sender) };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
+
+ipcMain.handle('window:new', () => { createWindow(); });
 
 ipcMain.on('pty:write', (_e, id, data) => {
   const s = sessions.get(id);
@@ -248,8 +298,8 @@ ipcMain.on('pty:resize', (_e, id, cols, rows) => {
 ipcMain.on('pty:kill', (_e, id) => killSession(id));
 
 /** Ctrl+Shift+` — browse for an exe, rooted at the configured folder. */
-ipcMain.handle('dialog:pick-exe', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+ipcMain.handle('dialog:pick-exe', async (e) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(senderWindow(e), {
     title: 'Pick a shell / executable',
     defaultPath: settings.data.pickerRoot,
     buttonLabel: 'Open terminal',
@@ -262,8 +312,8 @@ ipcMain.handle('dialog:pick-exe', async () => {
   return canceled || !filePaths.length ? null : filePaths[0];
 });
 
-ipcMain.handle('dialog:pick-folder', async (_e, defaultPath) => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+ipcMain.handle('dialog:pick-folder', async (e, defaultPath) => {
+  const { canceled, filePaths } = await dialog.showOpenDialog(senderWindow(e), {
     title: 'Pick a folder',
     defaultPath: defaultPath || settings.data.pickerRoot,
     properties: ['openDirectory', 'createDirectory'],
@@ -271,8 +321,8 @@ ipcMain.handle('dialog:pick-folder', async (_e, defaultPath) => {
   return canceled || !filePaths.length ? null : filePaths[0];
 });
 
-ipcMain.handle('dialog:confirm', async (_e, { title, message, detail }) => {
-  const { response } = await dialog.showMessageBox(win, {
+ipcMain.handle('dialog:confirm', async (e, { title, message, detail }) => {
+  const { response } = await dialog.showMessageBox(senderWindow(e), {
     type: 'question',
     buttons: ['Cancel', 'Close anyway'],
     defaultId: 0,
@@ -314,14 +364,17 @@ ipcMain.handle('ssh:unlock-spec', () => {
 
 // ---------------------------------------------------------------- lifecycle
 
+// The lock is kept on purpose, but it now means "one process", not "one window":
+// a second launch hands off to this process and gets another window out of it.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', focusWindow);
+  app.on('second-instance', () => { createWindow(); });
 
   app.whenReady().then(() => {
     settings.load();
     startSshAgent();
+    Menu.setApplicationMenu(null);
     createWindow();
     registerHotkeys();
   });

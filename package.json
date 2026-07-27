@@ -4,6 +4,7 @@
   "description": "Dead-simple terminal manager: tabbed terminals in one window, global hotkeys to open more.",
   "main": "src/main.js",
   "author": "Ian Byrd",
+  "license": "GPL-3.0-or-later",
   "private": true,
   "scripts": {
     "start": "electron .",

@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('terman', {
   revealSettings: () => ipcRenderer.invoke('settings:reveal'),
   settingsPath: () => ipcRenderer.invoke('settings:path'),
 
+  newWindow: () => ipcRenderer.invoke('window:new'),
+
   createPty: (spec) => ipcRenderer.invoke('pty:create', spec),
   writePty: (id, data) => ipcRenderer.send('pty:write', id, data),
   resizePty: (id, cols, rows) => ipcRenderer.send('pty:resize', id, cols, rows),
@@ -33,4 +35,5 @@ contextBridge.exposeInMainWorld('terman', {
   onNewDefault: (fn) => on('shortcut:new-default', fn),
   onPickExe: (fn) => on('shortcut:pick-exe', fn),
   onHotkeyStatus: (fn) => on('hotkey:status', fn),
+  onSettingsChanged: (fn) => on('settings:changed', fn),
 });

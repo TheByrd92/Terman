@@ -27,7 +27,7 @@
         <p class="empty-sub">No terminals open.</p>
         <div class="empty-keys">
           <div><kbd id="kbd-new">Ctrl</kbd> new terminal</div>
-          <div><kbd id="kbd-pick">Ctrl</kbd> pick an executable</div>
+          <div><kbd id="kbd-pick">Ctrl</kbd> pick a profile or exe</div>
         </div>
         <button id="empty-new" class="primary-btn">New terminal</button>
       </div>
@@ -91,9 +91,9 @@
         </section>
 
         <section>
-          <h3>Executable picker</h3>
+          <h3>Executable browser</h3>
           <label class="row">
-            <span>Folder the picker opens in</span>
+            <span>Folder <em>Browse</em> opens in</span>
             <span class="path-input">
               <input id="set-picker-root" type="text" spellcheck="false" />
               <button id="btn-browse-root" class="mini-btn">Browse&hellip;</button>
@@ -158,6 +158,17 @@
         <button id="settings-cancel" class="mini-btn">Cancel</button>
         <button id="settings-save" class="primary-btn">Save</button>
       </div>
+    </div>
+  </div>
+
+  <div id="picker-overlay" class="overlay" hidden>
+    <div class="picker" role="dialog" aria-modal="true" aria-label="Open a terminal">
+      <div id="picker-list" role="listbox"></div>
+      <p class="picker-hint">
+        <kbd>&uarr;</kbd><kbd>&darr;</kbd> move &nbsp;&middot;&nbsp; <kbd>Enter</kbd> open
+        &nbsp;&middot;&nbsp; <kbd>1</kbd>&hellip;<kbd>9</kbd> jump &nbsp;&middot;&nbsp;
+        <kbd>Esc</kbd> cancel
+      </p>
     </div>
   </div>
 

@@ -16,7 +16,7 @@ const el = {
   sshPill: document.getElementById('ssh-pill'),
 };
 
-/** @type {Array<{id:number,name:string,exe:string,cwd:string,title:string,alive:boolean,term:any,fit:any,pane:HTMLElement,tab:HTMLElement}>} */
+/** @type {Array<{id:number,name:string,exe:string,cwd:string,title:string,alive:boolean,group:string|null,term:any,fit:any,pane:HTMLElement,tab:HTMLElement}>} */
 let tabs = [];
 let activeId = null;
 let settings = null;
@@ -152,13 +152,123 @@ function matchesAccel(event, spec) {
     || (spec.key === '`' && code === 'backquote');
 }
 
+// ---------------------------------------------------------------- tab groups
+
+/**
+ * Browser-style tab groups: drag one tab onto another and the two share a colour.
+ * Drag a tab onto empty strip space to leave its group.
+ *
+ * Deliberately just a colour -- no names, no collapsing, no persistence. The point
+ * is to tell four ssh tabs apart at a glance, and a name would cost tab width the
+ * tmux title needs.
+ */
+const GROUP_COLORS = ['#6ea8fe', '#4ec9a5', '#ffd479', '#c792ea', '#ff8f8f', '#66d9ef', '#f0a36b', '#8fd46a'];
+
+/** @type {Map<string, string>} groupId -> css colour */
+const groupColors = new Map();
+let nextGroupId = 1;
+let dragId = null;
+let pendingRender = false;
+
+/** A colour no live group is already using. */
+function unusedColor() {
+  const taken = new Set(groupColors.values());
+  const free = GROUP_COLORS.filter((c) => !taken.has(c));
+  if (free.length) return free[Math.floor(Math.random() * free.length)];
+  // More groups than palette entries -- fall back to a random hue at the same
+  // lightness so it still sits in the theme.
+  return `hsl(${Math.floor(Math.random() * 360)} 62% 68%)`;
+}
+
+function newGroup() {
+  const id = `g${nextGroupId++}`;
+  groupColors.set(id, unusedColor());
+  return id;
+}
+
+/** Dissolve any group down to fewer than two members, freeing its colour for reuse. */
+function pruneGroups() {
+  for (const id of [...groupColors.keys()]) {
+    const members = tabs.filter((t) => t.group === id);
+    if (members.length < 2) {
+      for (const m of members) m.group = null;
+      groupColors.delete(id);
+    }
+  }
+}
+
+/** Move a tab so it sits directly after another in the strip. */
+function moveAfter(t, anchor) {
+  tabs = tabs.filter((x) => x !== t);
+  tabs.splice(tabs.indexOf(anchor) + 1, 0, t);
+}
+
+/**
+ * Drop of `sourceId` onto `targetId`: join the target's group, or start a new one
+ * from the pair. The source moves to the end of the group's run, because a group
+ * whose members aren't adjacent reads as two groups sharing a colour.
+ */
+function groupTabs(sourceId, targetId) {
+  const src = tabs.find((x) => x.id === sourceId);
+  const dst = tabs.find((x) => x.id === targetId);
+  if (!src || !dst || src === dst) return;
+
+  const group = dst.group || newGroup();
+  dst.group = group;
+  src.group = group;
+
+  const others = tabs.filter((t) => t.group === group && t !== src);
+  moveAfter(src, others[others.length - 1]);
+
+  pruneGroups();
+  renderTabs();
+}
+
+function ungroup(id) {
+  const t = tabs.find((x) => x.id === id);
+  if (!t || !t.group) return;
+  t.group = null;
+  pruneGroups();
+  renderTabs();
+}
+
+function endDrag() {
+  dragId = null;
+  for (const n of el.tabs.querySelectorAll('.dragging, .drop-target')) {
+    n.classList.remove('dragging', 'drop-target');
+  }
+  if (pendingRender) {
+    pendingRender = false;
+    renderTabs();
+  }
+}
+
+/** Dropping on the strip itself -- past the last tab -- means "leave the group". */
+el.tabs.addEventListener('dragover', (e) => { if (dragId !== null) e.preventDefault(); });
+el.tabs.addEventListener('drop', (e) => {
+  if (dragId === null || e.target !== el.tabs) return;
+  e.preventDefault();
+  const from = dragId;
+  endDrag();
+  ungroup(from);
+});
+
 // ---------------------------------------------------------------- rendering
 
 function renderTabs() {
+  // A shell can retitle itself mid-drag (tmux does it on every window switch), and
+  // rebuilding the strip would destroy the element under the cursor. Defer to dragend.
+  if (dragId !== null) {
+    pendingRender = true;
+    return;
+  }
+
   el.tabs.replaceChildren(...tabs.map((t) => {
     const tab = document.createElement('div');
-    tab.className = `tab${t.id === activeId ? ' active' : ''}${t.alive ? '' : ' dead'}`;
+    tab.className = `tab${t.id === activeId ? ' active' : ''}${t.alive ? '' : ' dead'}${t.group ? ' grouped' : ''}`;
     tab.setAttribute('role', 'tab');
+    tab.draggable = true;
+    if (t.group) tab.style.setProperty('--group', groupColors.get(t.group));
     // Full title first -- it carries the host prefix the label strips, plus anything
     // the label ellipsised away.
     tab.title = [
@@ -184,6 +294,31 @@ function renderTabs() {
     tab.append(dot, label, close);
     tab.addEventListener('click', () => activate(t.id));
     tab.addEventListener('auxclick', (e) => { if (e.button === 1) closeTab(t.id); });
+
+    tab.addEventListener('dragstart', (e) => {
+      dragId = t.id;
+      e.dataTransfer.effectAllowed = 'move';
+      // Some drop targets never fire without payload, even when it goes unread.
+      e.dataTransfer.setData('text/plain', String(t.id));
+      tab.classList.add('dragging');
+    });
+    tab.addEventListener('dragend', endDrag);
+    tab.addEventListener('dragover', (e) => {
+      if (dragId === null || dragId === t.id) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      tab.classList.add('drop-target');
+    });
+    tab.addEventListener('dragleave', () => tab.classList.remove('drop-target'));
+    tab.addEventListener('drop', (e) => {
+      if (dragId === null) return;
+      e.preventDefault();
+      e.stopPropagation();   // the strip's own handler means "ungroup"
+      const from = dragId;
+      endDrag();
+      groupTabs(from, t.id);
+    });
+
     t.tab = tab;
     return tab;
   }));
@@ -267,6 +402,7 @@ async function newTerminal(spec = {}) {
     title: res.name,   // full title, as reported by the shell
     label: res.name,   // what the tab shows: title minus the "host: " prefix
     alive: true,
+    group: null,       // set by dragging one tab onto another
     term,
     fit,
     pane,
@@ -307,6 +443,7 @@ async function closeTab(id) {
   t.term.dispose();
   t.pane.remove();
   tabs = tabs.filter((x) => x.id !== id);
+  pruneGroups();
 
   if (activeId === id) {
     const next = tabs[tabs.length - 1];
@@ -329,6 +466,100 @@ function cycleTab(delta) {
 async function pickAndOpen() {
   const exe = await api.pickExe();
   if (exe) await newTerminal({ exe, args: [] });
+}
+
+// ---------------------------------------------------------------- open picker
+
+/**
+ * What Ctrl+Shift+` opens. It used to go straight to the file dialog, which had the
+ * priorities backwards -- opening a configured profile is the common case and
+ * browsing the filesystem is the fallback, so that's the last row.
+ *
+ * Keyboard-first, because the thing that opens it is a keyboard shortcut. Starts on
+ * the default profile so Enter alone is the same as Ctrl+`.
+ */
+const pui = {
+  overlay: document.getElementById('picker-overlay'),
+  list: document.getElementById('picker-list'),
+};
+
+/** @type {Array<{label:string,sub:string,tag:string,run:() => any}>} */
+let pickerRows = [];
+let pickerIndex = 0;
+
+function renderPicker() {
+  pui.list.replaceChildren(...pickerRows.map((r, i) => {
+    const row = document.createElement('div');
+    row.className = `picker-row${i === pickerIndex ? ' sel' : ''}`;
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', String(i === pickerIndex));
+
+    const key = document.createElement('span');
+    key.className = 'picker-key';
+    key.textContent = i < 9 ? String(i + 1) : '';
+
+    const name = document.createElement('span');
+    name.className = 'picker-name';
+    name.textContent = r.label;
+
+    const sub = document.createElement('span');
+    sub.className = 'picker-sub';
+    sub.textContent = r.tag ? `${r.sub}  ·  ${r.tag}` : r.sub;
+
+    row.append(key, name, sub);
+    row.addEventListener('click', () => choosePicker(i));
+    // Hover moves the selection, so the mouse and the keyboard agree on what Enter does.
+    row.addEventListener('mousemove', () => {
+      if (pickerIndex !== i) {
+        pickerIndex = i;
+        renderPicker();
+      }
+    });
+    return row;
+  }));
+}
+
+function openPicker() {
+  if (!settings) return;
+  // Pressing the hotkey again dismisses it rather than stacking.
+  if (!pui.overlay.hidden) {
+    closePicker();
+    return;
+  }
+
+  pickerRows = settings.profiles.map((p) => ({
+    label: p.name,
+    sub: basename(p.exe),
+    tag: p.id === settings.defaultProfileId ? 'default' : '',
+    run: () => newTerminal({ profileId: p.id }),
+  }));
+  pickerRows.push({
+    label: 'Browse for an executable…',
+    sub: settings.pickerRoot,
+    tag: '',
+    run: () => pickAndOpen(),
+  });
+
+  pickerIndex = Math.max(0, pickerRows.findIndex((r) => r.tag === 'default'));
+  renderPicker();
+  pui.overlay.hidden = false;
+}
+
+function closePicker() {
+  pui.overlay.hidden = true;
+  const t = tabs.find((x) => x.id === activeId);
+  if (t) t.term.focus();
+}
+
+function movePicker(delta) {
+  pickerIndex = (pickerIndex + delta + pickerRows.length) % pickerRows.length;
+  renderPicker();
+}
+
+function choosePicker(i = pickerIndex) {
+  const row = pickerRows[i];
+  closePicker();
+  if (row) row.run();
 }
 
 // ---------------------------------------------------------------- ssh agent
@@ -562,7 +793,7 @@ function applyHotkeyHints() {
 
 document.getElementById('btn-new').addEventListener('click', () => newTerminal());
 document.getElementById('empty-new').addEventListener('click', () => newTerminal());
-document.getElementById('btn-pick').addEventListener('click', pickAndOpen);
+document.getElementById('btn-pick').addEventListener('click', openPicker);
 document.getElementById('btn-settings').addEventListener('click', openSettings);
 document.getElementById('settings-close').addEventListener('click', closeSettings);
 document.getElementById('settings-cancel').addEventListener('click', closeSettings);
@@ -596,6 +827,7 @@ document.getElementById('btn-add-profile').addEventListener('click', async () =>
 });
 
 sui.overlay.addEventListener('click', (e) => { if (e.target === sui.overlay) closeSettings(); });
+pui.overlay.addEventListener('click', (e) => { if (e.target === pui.overlay) closePicker(); });
 
 api.onPtyData((id, data) => {
   const t = tabs.find((x) => x.id === id);
@@ -610,8 +842,19 @@ api.onPtyExit((id, code) => {
   renderTabs();
 });
 
-api.onNewDefault(() => newTerminal());
-api.onPickExe(() => pickAndOpen());
+// A hotkey can summon a brand-new window and fire before its settings have loaded,
+// so both wait on init rather than reading a null `settings`.
+api.onNewDefault(async () => { await ready; newTerminal(); });
+api.onPickExe(async () => { await ready; openPicker(); });
+
+// Another window saved settings; one file, so this window follows.
+api.onSettingsChanged((data) => {
+  settings = data;
+  applyAppearance();
+  applyHotkeyHints();
+  refreshSshPill();
+});
+
 api.onHotkeyStatus((status) => {
   if (!sui.overlay.hidden) showHotkeyWarning(status);
   if (status && status.enabled && (status.newDefault === 'taken' || status.pickExe === 'taken')) {
@@ -644,6 +887,25 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // Every key, not just the handled ones: the terminal behind the overlay still holds
+  // focus, so anything let through would be typed into the shell.
+  if (!pui.overlay.hidden) {
+    e.preventDefault();
+    e.stopPropagation();
+    // The combo that opened it also dismisses it, so both hotkey paths (system-wide
+    // and in-window) behave the same.
+    if (matchesAccel(e, parseAccel(settings.hotkeys.pickExe))) closePicker();
+    else if (e.key === 'Escape') closePicker();
+    else if (e.key === 'ArrowDown' || e.key === 'Tab') movePicker(1);
+    else if (e.key === 'ArrowUp') movePicker(-1);
+    else if (e.key === 'Enter') choosePicker();
+    else if (/^[1-9]$/.test(e.key)) {
+      const i = Number(e.key) - 1;
+      if (i < pickerRows.length) choosePicker(i);
+    }
+    return;
+  }
+
   // Swallow only if a tab switch actually happened; with a single tab open the
   // keypress still belongs to the shell.
   if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && TAB_STEP[e.key] !== undefined) {
@@ -663,7 +925,7 @@ document.addEventListener('keydown', (e) => {
   if (matchesAccel(e, parseAccel(settings.hotkeys.pickExe))) {
     e.preventDefault();
     e.stopPropagation();
-    pickAndOpen();
+    openPicker();
     return;
   }
   // Conveniences that don't collide with common shell bindings.
@@ -677,6 +939,14 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     e.stopPropagation();
     if (activeId != null) closeTab(activeId);
+    return;
+  }
+  // Ctrl+Shift+N, not Ctrl+N: bare Ctrl+N is readline's next-history and vim's
+  // completion, so it has to reach the shell.
+  if (e.ctrlKey && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+    e.preventDefault();
+    e.stopPropagation();
+    api.newWindow();
     return;
   }
   if (e.ctrlKey && !e.altKey && e.key === 'Tab') {
@@ -698,7 +968,8 @@ window.addEventListener('resize', () => {
 
 let booted = false;
 
-(async function init() {
+/** Resolves once settings are loaded, so IPC that arrives during boot can wait. */
+const ready = (async function init() {
   if (booted) return;
   booted = true;
   settings = await api.getSettings();
@@ -708,4 +979,4 @@ let booted = false;
   // Only open the startup terminal if nothing raced ahead of us (e.g. a hotkey
   // fired while settings were still loading).
   if (tabs.length === 0) await newTerminal();
-})();
+}());

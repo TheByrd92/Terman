@@ -1,11 +1,11 @@
 # Terman
 
-[![Build portable](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml/badge.svg)](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml)
+[![Build & release](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml/badge.svg)](https://github.com/TheByrd92/Terman/actions/workflows/build-portable.yml)
 
-A small terminal manager for Windows. One window, tabbed terminals, two global hotkeys.
+A small terminal manager for Windows. Tabbed terminals, two global hotkeys.
 
 - <kbd>Ctrl</kbd>+<kbd>`</kbd> — open a new terminal using the default profile
-- <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> — browse `D:\Utilities\msys64` (configurable) and open whatever exe you pick
+- <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> — pick from your profiles, or browse for any exe
 
 Both work system-wide by default, so they summon a terminal even when Terman isn't
 focused. Everything is configurable in Settings.
@@ -23,8 +23,10 @@ That writes two things to `dist\`:
 
 | Artifact | What it is |
 | --- | --- |
-| `Terman-1.0.0-Setup.exe` | Installer. Asks where to put it, makes Start Menu + desktop shortcuts, registers an entry in Add/Remove Programs. |
-| `Terman-1.0.0-Portable.exe` | Single self-contained exe. No install, no registry, no shortcuts — runs from a USB stick or any folder. |
+| `Terman-<version>-Setup.exe` | Installer. Asks where to put it, makes Start Menu + desktop shortcuts, registers an entry in Add/Remove Programs. |
+| `Terman-<version>-Portable.exe` | Single self-contained exe. No install, no registry, no shortcuts — runs from a USB stick or any folder. |
+
+The version in both filenames is whatever `package.json` says.
 
 The installer is deliberately not one-click: it shows a directory page so you choose the
 install folder, and it installs per-user (no admin prompt) by default. Uninstalling leaves
@@ -44,16 +46,37 @@ tab and download `Terman-<version>-Portable` from the summary page. GitHub zips 
 automatically, so you get a `.zip` with the exe inside. Kept 90 days. Downloading an
 artifact requires being signed in to GitHub.
 
-**Tagged builds** additionally publish a GitHub Release, which is the only way to hand out
-a link that works without a GitHub account:
+### Versioning
 
-```bash
-git tag v1.0.1
-git push origin v1.0.1
-```
+Versions bump themselves. Every push to `main` builds, bumps the **patch** number, commits
+the new `package.json`/`package-lock.json` as `chore(release): vX.Y.Z [skip ci]`, tags it,
+and publishes a GitHub Release with the exe attached — the only kind of download link that
+works without a GitHub account.
 
-The version in the artifact name comes from `package.json`, so bump that in the same commit
-you tag.
+Override the level from the commit message, or from **Actions → Build & release → Run
+workflow** where it's a dropdown:
+
+| In the commit message | Result |
+| --- | --- |
+| *(nothing)* | patch — `1.0.1` → `1.0.2` |
+| `[minor]` | `1.0.1` → `1.1.0` |
+| `[major]` or `[breaking]` | `1.0.1` → `2.0.0` |
+| `[skip bump]` or `[no-bump]` | builds, no bump, no tag, no release |
+
+Order of operations matters here: the bump is applied to `package.json` **before** the
+build, so the exe filename matches the version, but it isn't committed or tagged until the
+build has passed. A broken commit never gets a version tag.
+
+Pull requests build and upload an artifact, and never bump — there's nowhere to push the
+commit. Pushing a `v*` tag by hand still works too: that skips the bump and releases the
+version already in `package.json`.
+
+Two things to know if it ever misbehaves. The bump is pushed with the built-in
+`GITHUB_TOKEN`, and pushes made with that token don't trigger workflows — that's what stops
+the release commit from starting another run, and also why the release is published in the
+same run rather than by the tag push. And the push is a plain fast-forward: if you push to
+`main` while a build is running, the tag step fails loudly rather than rebasing a release
+commit behind your back. Re-run it and it'll bump from wherever `main` now is.
 
 The workflow caches the Electron download (~270 MB) keyed on `package-lock.json`, builds
 with `CSC_IDENTITY_AUTO_DISCOVERY=false` since there's no signing certificate in CI, and
@@ -84,9 +107,12 @@ renderer* for breakpoints in `src/renderer/*` (start **Terman** first, then atta
 | Action | How |
 | --- | --- |
 | New terminal (default profile) | <kbd>Ctrl</kbd>+<kbd>`</kbd> or the `+` button |
-| Open a specific exe | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> or the `…` button |
+| Pick a profile / any exe | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> or the `…` button |
+| New window | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd>, or just launch Terman again |
 | Settings | <kbd>Ctrl</kbd>+<kbd>,</kbd> or the gear |
 | Close current tab | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd>, the tab's `×`, or middle-click the tab |
+| Group two tabs | drag one tab onto another |
+| Leave a group | drag the tab onto empty space in the tab strip |
 | Tab right / left | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>→</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd> |
 | Next / previous tab | <kbd>Ctrl</kbd>+<kbd>Tab</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Tab</kbd> |
 | Toggle DevTools | <kbd>F12</kbd> |
@@ -101,6 +127,92 @@ Tab labels follow the shell's own title (the `OSC 0`/`OSC 2` sequence), so an MS
 tab reads as its current directory. Long titles ellipsise to the available width; hover
 the tab for the full title, exe and cwd. The dot is green while the process lives and red
 once it exits; the tab sticks around after exit so you can still read the scrollback.
+
+### The open picker
+
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> lists your profiles, with the file browser as
+the last row:
+
+```
+ 1  UCRT64                      bash.exe
+ 2  MINGW64                     bash.exe
+ 3  MSYS                        bash.exe
+ 4  PowerShell 7                pwsh.exe
+ 5  Windows PowerShell          powershell.exe
+ 6  Command Prompt              cmd.exe
+ 7  AWS Fedora Box              ssh.exe  ·  default
+ 8  Browse for an executable…   D:\Utilities\msys64
+```
+
+| Key | Does |
+| --- | --- |
+| <kbd>↑</kbd> <kbd>↓</kbd> / <kbd>Tab</kbd> | move, wrapping at the ends |
+| <kbd>1</kbd>…<kbd>9</kbd> | jump straight to that row |
+| <kbd>Enter</kbd> | open the highlighted row |
+| <kbd>Esc</kbd>, a click outside, or <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> again | cancel |
+
+It opens on the default profile, so <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>`</kbd> then
+<kbd>Enter</kbd> is the same as <kbd>Ctrl</kbd>+<kbd>`</kbd>. Hovering with the mouse moves
+the selection too, so hover-then-<kbd>Enter</kbd> does what it looks like.
+
+Picking a profile is not the same as browsing to the same exe. Three of the rows above are
+one `bash.exe` and differ only by the `MSYSTEM` variable that makes them UCRT64 / MINGW64 /
+MSYS — the profile carries that `env` (and its `cwd`), while the file browser can only hand
+over a path. Reach for the last row when you want something you haven't configured; if you
+find yourself picking the same exe twice, it wants to be a profile.
+
+Every keystroke is swallowed while the picker is open, including ones it doesn't use. The
+terminal behind it still holds focus, and with an `ssh` profile as your default, a key that
+leaked through would land on a remote box.
+
+### Naming a tab yourself
+
+The tab label is whatever the shell last reported via `OSC 0`/`OSC 2`, so write that
+sequence and the tab renames immediately:
+
+```bash
+printf '\033]0;deploy\007'
+```
+
+That's `ESC ] 0 ;` *title* `BEL`. Use `printf`, not `echo` — `echo -e` isn't portable, and
+`echo` without it prints the escape literally.
+
+| Shell | Command |
+| --- | --- |
+| bash / zsh / any POSIX shell | `printf '\033]0;deploy\007'` |
+| PowerShell | `$Host.UI.RawUI.WindowTitle = 'deploy'` |
+| cmd | `title deploy` |
+| inside tmux | `tmux rename-session deploy` |
+
+In MSYS bash the name won't stick, because its default `PS1` re-emits the title (your
+current directory) at every prompt and overwrites yours. To hold a name for the rest of
+the session, set it from the prompt instead:
+
+```bash
+PROMPT_COMMAND='printf "\033]0;deploy\007"'
+```
+
+Two Terman-side rules apply to whatever you set: a title containing a backslash is
+shortened to its last segment (that's how the noisy `C:\...\bash.exe` opening title
+becomes just the profile name), and a `host: ` prefix is stripped for the label — so
+`api: build` shows as `build`, with the full string in the tooltip. Avoid a colon if you
+want the whole thing on the tab.
+
+### Grouping tabs
+
+Drag one tab onto another and both get the same colour — a tinted body and an underline.
+Drag a third onto either of them to add it. The dragged tab moves next to its group so the
+run stays contiguous.
+
+There's no group name, no collapsing, and nothing to configure: the colour is the whole
+feature, which is enough to tell four identical `ssh` tabs apart without spending tab
+width a tmux title needs. Colours come from an eight-entry palette, picked at random from
+the ones no other group is using.
+
+To pull a tab out, drag it onto empty space in the strip past the last tab. A group that
+drops below two members dissolves and hands its colour back. Groups live in the window
+only — they aren't written to settings.json and don't survive a restart, same as the tabs
+themselves.
 
 ## SSH: unlock your key once
 
@@ -302,7 +414,7 @@ from your machine.
   ],
   "defaultProfileId": "msys-ucrt64",
   "defaultCwd": "",                                    // folder new terminals open in
-  "pickerRoot": "D:\\Utilities\\msys64",               // where Ctrl+Shift+` starts
+  "pickerRoot": "D:\\Utilities\\msys64",               // where the Browse row starts
   "hotkeys": { "newDefault": "Control+`", "pickExe": "Control+Shift+`" },
   "globalHotkeys": true,
   "fontSize": 14,
@@ -311,7 +423,7 @@ from your machine.
 }
 ```
 
-The dialog covers the default profile, the default folder, both hotkeys, the picker
+The dialog covers the default profile, the default folder, both hotkeys, the browse
 folder, appearance, and profile name/exe/args. Per-profile `cwd` and `env` are
 JSON-file-only — that's where `MSYSTEM` lives, which is what makes UCRT64 / MINGW64 /
 MSYS distinct rather than three copies of the same `bash.exe`.
@@ -356,10 +468,11 @@ same binary loads in both Node and Electron.
 
 ```
 src/
-  main.js               window, PTY lifecycle, global hotkeys, IPC
+  main.js               windows, PTY lifecycle, global hotkeys, IPC
   preload.js            contextBridge surface (contextIsolation on, no nodeIntegration)
   settings.js           load/normalize/save + first-run profile detection
-  renderer/             tab bar, xterm panes, settings dialog
+  ssh-agent.js          agent lifecycle, SSH_AUTH_SOCK, key-count status
+  renderer/             tab bar, tab groups, xterm panes, open picker, settings dialog
 build/
   make-icon.ps1         generates icon.ico
 dist/                   build output (installer, portable exe) - not source
@@ -371,9 +484,35 @@ from inside an archive.
 
 The renderer never touches Node APIs; it drives PTYs entirely over IPC.
 
+## Windows
+
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> opens another window, and so does launching
+Terman again — the second launch hands off to the process already running and asks it for
+a window instead of starting over. Each window has its own tabs, groups and terminals, and
+closing one kills only the terminals it owns.
+
+It's one process behind all of them, deliberately:
+
+| Shared | Why it matters |
+| --- | --- |
+| The ssh-agent | You unlock once, and every window's terminals see the key. One agent per window would mean one passphrase prompt per window. |
+| The global hotkeys | Only one process can own <kbd>Ctrl</kbd>+<kbd>`</kbd> system-wide. Registered once here, and it acts on the focused window (or the last focused one, if Terman isn't in front). |
+| settings.json | A single writer. Save in one window and the others pick up the font size and hotkey hints immediately rather than keeping what they launched with. |
+
+<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>N</kbd> rather than <kbd>Ctrl</kbd>+<kbd>N</kbd>,
+because bare <kbd>Ctrl</kbd>+<kbd>N</kbd> is readline's next-history and vim's completion —
+it has to reach the shell.
+
+The title bar carries the version (`Terman 1.0.1`), which is the quickest way to tell which
+build a window is, and comes from `package.json` via `app.getVersion()`.
+
 ## Notes
 
-- Closing the window kills every PTY it owns.
-- Only one instance runs; launching again focuses the existing window.
-- To build a standalone installer, add `electron-builder` — not wired up, since running
-  from source is enough for a personal tool.
+- Closing a window kills every PTY it owns; quitting kills the ssh-agent with it.
+
+## License
+
+GPL-3.0-or-later — see [LICENSE](LICENSE). Fork it, change it, ship it; derivative works
+stay under the same license.
+
+Dependencies are all permissive (MIT): Electron, xterm.js, `@lydell/node-pty`.
