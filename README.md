@@ -103,6 +103,64 @@ tab reads as its current directory. Long titles ellipsise to the available width
 the tab for the full title, exe and cwd. The dot is green while the process lives and red
 once it exits; the tab sticks around after exit so you can still read the scrollback.
 
+## SSH: unlock your key once
+
+A passphrase-protected key normally prompts **once per terminal**, because every tab is its
+own process. Terman fixes that by running a single `ssh-agent` and handing its
+`SSH_AUTH_SOCK` to every PTY it spawns — that variable is just the address of the agent's
+socket, and any `ssh` that can see it asks the agent for the key instead of prompting. So
+you unlock once per launch and every tab after that connects silently.
+
+Click the **SSH** badge in the status bar:
+
+| Badge | Meaning |
+| --- | --- |
+| `SSH locked` (amber) | agent running, holds no key — click to unlock |
+| `SSH 1 key` (green) | agent holds your key; new terminals won't prompt |
+| `SSH agent off` (dim) | `ssh-agent` not found, or disabled in Settings |
+
+Clicking opens a tab running `ssh-add`. You type the passphrase there, at a real tty
+prompt — **Terman never sees it**. It isn't stored, isn't written to disk, and isn't passed
+through any Terman code path. The decrypted key lives in the agent's memory and is dropped
+when Terman quits.
+
+Deliberately *not* implemented: reading a password out of Windows Credential Manager to
+feed `ssh` automatically. That converts an interactive secret into a stored one that any
+process running as you can read back. An agent-held key has no such exposure. (`sshpass`
+is worse still — it leaks the password into process arguments.)
+
+If you already run your own agent, Terman adopts it rather than starting a second one, and
+leaves it alone on exit — it only kills an agent it started itself.
+
+Turn it off in **Settings → SSH agent**. Config lives under `sshAgent` in settings.json:
+
+```jsonc
+"sshAgent": {
+  "enabled": true,
+  "binDir": "",     // "" = auto-detect ssh-agent/ssh-add
+  "keys": []        // [] = ssh-add defaults (~/.ssh/id_*), or list key paths
+}
+```
+
+### Auto-connecting on a new terminal
+
+An SSH terminal is just a profile whose executable is `ssh`:
+
+| Field | Value |
+| --- | --- |
+| Name | `fedora` |
+| Executable | `D:\Utilities\msys64\usr\bin\ssh.exe` |
+| Args | `-t fedora@3.19.61.51 "tmux new -A -s main"` |
+
+Set it as the default profile and <kbd>Ctrl</kbd>+<kbd>`</kbd> connects straight in. `-t`
+forces a tty, which is required whenever you pass a remote command — without it tmux exits
+with "not a terminal". The args field splits on spaces but honours double quotes, so the
+remote command stays a single argument.
+
+Use the msys `ssh.exe` specifically: it's the one that knows your `~/.ssh` config, and its
+`HOME` resolves to the msys home even when Terman spawns it directly rather than through a
+login shell.
+
 ## tmux support
 
 Terman names tabs after the tmux session you're attached to, including over ssh — so a

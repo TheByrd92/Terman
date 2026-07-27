@@ -200,8 +200,27 @@ kbd {
   min-height: 21px;
 }
 
-#status-left { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#status-left { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 #status-right { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* ssh-agent badge: click to unlock */
+.pill {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--bg-tab);
+  color: var(--fg-dim);
+  border-radius: 9px;
+  padding: 0 8px;
+  font: 10.5px/1.6 "Segoe UI", system-ui, sans-serif;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pill:hover { border-color: var(--accent); color: var(--fg); }
+.pill[hidden] { display: none; }
+.pill.locked { border-color: #ffd479; color: #ffd479; }
+.pill.unlocked { border-color: var(--ok); color: var(--ok); }
+.pill.off { opacity: 0.55; }
 
 /* ---------------------------------------------------------------- settings */
 

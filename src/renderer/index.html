@@ -35,6 +35,7 @@
 
     <footer id="statusbar">
       <span id="status-left"></span>
+      <button id="ssh-pill" class="pill" hidden></button>
       <span id="status-right"></span>
     </footer>
   </div>
@@ -120,6 +121,26 @@
           <h3>Profiles</h3>
           <div id="profile-list"></div>
           <button id="btn-add-profile" class="mini-btn">Add profile&hellip;</button>
+        </section>
+
+        <section>
+          <h3>SSH agent</h3>
+          <label class="row checkbox">
+            <input id="set-ssh-enabled" type="checkbox" />
+            <span>Share one ssh-agent across all terminals</span>
+          </label>
+          <p class="hint">
+            A passphrase-protected key normally prompts once per terminal, because each tab
+            is its own process. With this on, Terman runs a single agent and every terminal
+            uses it &mdash; so you unlock once per launch. Click the
+            <strong>SSH</strong> badge in the status bar to unlock; the passphrase is typed
+            into a normal terminal tab and never passes through Terman. The key is dropped
+            from memory when Terman quits.
+          </p>
+          <p class="hint">
+            Leave <code>keys</code> empty in settings.json to let <code>ssh-add</code> use
+            its defaults (<code>~/.ssh/id_*</code>), or list specific key paths.
+          </p>
         </section>
 
         <section>

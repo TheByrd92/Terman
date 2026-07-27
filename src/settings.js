@@ -77,6 +77,10 @@ function defaultSettings() {
     defaultCwd: '',
     hotkeys: { newDefault: 'Control+`', pickExe: 'Control+Shift+`' },
     globalHotkeys: true,
+    // One shared ssh-agent for every tab, so a passphrase-protected key is
+    // unlocked once per launch instead of once per terminal. keys: [] means
+    // let ssh-add pick its defaults (~/.ssh/id_*).
+    sshAgent: { enabled: true, binDir: '', keys: [] },
     fontSize: 14,
     fontFamily: 'Cascadia Mono, Consolas, DejaVu Sans Mono, monospace',
     scrollback: 10000,
@@ -116,6 +120,14 @@ function normalize(raw) {
       pickExe: typeof hk.pickExe === 'string' ? hk.pickExe : d.hotkeys.pickExe,
     },
     globalHotkeys: s.globalHotkeys !== false,
+    sshAgent: (() => {
+      const a = (s.sshAgent && typeof s.sshAgent === 'object') ? s.sshAgent : {};
+      return {
+        enabled: a.enabled !== false,
+        binDir: typeof a.binDir === 'string' ? a.binDir : '',
+        keys: Array.isArray(a.keys) ? a.keys.filter((k) => typeof k === 'string' && k.trim()) : [],
+      };
+    })(),
     fontSize: Number.isFinite(fontSize) ? Math.min(32, Math.max(8, fontSize)) : d.fontSize,
     fontFamily: typeof s.fontFamily === 'string' && s.fontFamily ? s.fontFamily : d.fontFamily,
     scrollback: Number.isFinite(scrollback) ? Math.min(200000, Math.max(100, scrollback)) : d.scrollback,

@@ -6,10 +6,13 @@ const fs = require('fs');
 const os = require('os');
 const pty = require('@lydell/node-pty');
 const { Settings } = require('./settings');
+const { SshAgent } = require('./ssh-agent');
 
 const settings = new Settings(path.join(app.getPath('userData'), 'settings.json'));
 const DEV = process.argv.includes('--dev');
 const debug = (...a) => { if (DEV) console.log(...a); };
+
+let sshAgent = null;
 
 /** id -> { proc, profileName, exe, alive } */
 const sessions = new Map();
@@ -114,7 +117,14 @@ function createSession(spec = {}) {
 
   const args = spec.exe ? (spec.args || []) : ((profile && profile.args) || []);
   const cwd = resolveCwd(spec.cwd, profile);
-  const env = { ...process.env, ...((!spec.exe && profile && profile.env) || {}), TERM: 'xterm-256color' };
+  const env = {
+    ...process.env,
+    ...((!spec.exe && profile && profile.env) || {}),
+    // Shared agent, so a passphrase-protected key is unlocked once per launch
+    // rather than once per tab. Empty when the agent is off or unavailable.
+    ...(sshAgent ? sshAgent.env() : {}),
+    TERM: 'xterm-256color',
+  };
 
   // Electron leaks these into children and they confuse some shells.
   delete env.ELECTRON_RUN_AS_NODE;
@@ -197,6 +207,12 @@ ipcMain.handle('settings:get', () => settings.data);
 ipcMain.handle('settings:save', (_e, patch) => {
   const data = settings.save(patch);
   registerHotkeys();
+
+  // Toggling the agent takes effect immediately; existing tabs keep the env they
+  // were spawned with, so it applies to new terminals.
+  if (data.sshAgent.enabled && !sshAgent) startSshAgent();
+  else if (!data.sshAgent.enabled && sshAgent) { sshAgent.stop(); sshAgent = null; }
+
   return data;
 });
 
@@ -270,6 +286,32 @@ ipcMain.handle('dialog:confirm', async (_e, { title, message, detail }) => {
 
 ipcMain.handle('hotkey:status', () => hotkeyStatus);
 
+// ---------------------------------------------------------------- ssh agent
+
+function startSshAgent() {
+  const cfg = settings.data.sshAgent;
+  if (!cfg.enabled) {
+    sshAgent = null;
+    return;
+  }
+  sshAgent = new SshAgent(cfg.binDir || null);
+  const ok = sshAgent.start();
+  debug(`[terman] ssh-agent ${ok ? `up sock=${sshAgent.sock} adopted=${sshAgent.adopted}` : `failed: ${sshAgent.error}`}`);
+  if (!ok) sshAgent = null;
+}
+
+ipcMain.handle('ssh:status', () => {
+  if (!settings.data.sshAgent.enabled) return { enabled: false, running: false, keyCount: 0 };
+  if (!sshAgent) return { enabled: true, running: false, keyCount: 0, error: 'agent not started' };
+  return { enabled: true, ...sshAgent.status() };
+});
+
+/** Returns what the renderer should open in a tab so ssh-add can prompt on a real tty. */
+ipcMain.handle('ssh:unlock-spec', () => {
+  if (!sshAgent) return null;
+  return sshAgent.unlockSpec(settings.data.sshAgent.keys);
+});
+
 // ---------------------------------------------------------------- lifecycle
 
 if (!app.requestSingleInstanceLock()) {
@@ -279,10 +321,15 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     settings.load();
+    startSshAgent();
     createWindow();
     registerHotkeys();
   });
 
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', () => globalShortcut.unregisterAll());
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+    // Drops the decrypted key from memory. Only kills an agent we started.
+    if (sshAgent) sshAgent.stop();
+  });
 }
