@@ -70,10 +70,9 @@ The app icon is generated, not checked in as binary art — `npm run icon` regen
 npm start
 ```
 
-Or double-click **`Terman.vbs`** (no console window) / **`Terman.cmd`** (console attached,
-useful for seeing main-process logs).
-
-`npm run dev` opens DevTools and echoes spawn/hotkey diagnostics to stdout.
+`npm run dev` adds `--dev`, which opens DevTools and echoes spawn/hotkey diagnostics.
+Redirect stdout to see them (`npm run dev > log.txt`) — Electron is a GUI-subsystem binary
+on Windows and doesn't write to an inherited console window.
 
 In VS Code, <kbd>F5</kbd> runs it with main-process breakpoints live and main's `console.log`
 going to the Debug Console. Two more configs in `.vscode/launch.json`: *Terman: attach to
