@@ -1,6 +1,6 @@
 {
   "name": "terman",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Dead-simple terminal manager: tabbed terminals in one window, global hotkeys to open more.",
   "main": "src/main.js",
   "author": "Ian Byrd",
