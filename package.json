@@ -10,10 +10,10 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "icon": "pwsh -NoProfile -File build/make-icon.ps1",
-    "dist": "npm run icon && electron-builder --win",
-    "dist:installer": "npm run icon && electron-builder --win nsis",
-    "dist:portable": "npm run icon && electron-builder --win portable",
-    "dist:zip": "npm run icon && electron-builder --win zip",
+    "dist": "npm run icon && electron-builder --win --publish never",
+    "dist:installer": "npm run icon && electron-builder --win nsis --publish never",
+    "dist:portable": "npm run icon && electron-builder --win portable --publish never",
+    "dist:zip": "npm run icon && electron-builder --win zip --publish never",
     "pack": "npm run icon && electron-builder --dir"
   },
   "dependencies": {

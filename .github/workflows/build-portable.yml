@@ -97,7 +97,10 @@ jobs:
       # All three win targets from package.json: installer, portable, plain zip.
       - name: Build all Windows targets
         # No signing certificate in CI; without this electron-builder goes looking
-        # for one and the log fills with noise.
+        # for one and the log fills with noise. The dist script also passes
+        # --publish never: on CI electron-builder otherwise tries to create the
+        # GitHub release itself and dies wanting GH_TOKEN. The "Publish release"
+        # step below owns that, so electron-builder only ever packages here.
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run dist
