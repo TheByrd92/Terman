@@ -413,13 +413,39 @@ input[type="number"] { width: 84px; }
 /* name | executable | args | remove */
 .profile {
   display: grid;
-  grid-template-columns: 0.85fr 1.7fr 0.6fr 26px;
+  grid-template-columns: 0.85fr 1.7fr 0.6fr auto 26px;
   gap: 6px;
   align-items: center;
   margin-bottom: 6px;
 }
 
 .profile input { width: 100%; }
+
+/* The tmux toggle is a label so the word is part of the hit target. */
+.profile .p-tmux {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.profile .p-tmux input {
+  width: auto;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Not every shell can reach a tmux; say so by looking unavailable rather than vanishing,
+   so the column doesn't jump around as you edit an exe path. */
+.profile .p-tmux.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.profile .p-tmux.disabled input { cursor: not-allowed; }
 
 .profile .p-del {
   color: var(--danger);

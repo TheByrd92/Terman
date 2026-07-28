@@ -643,6 +643,14 @@ const sui = {
 /** Working copy so Cancel is a true cancel. */
 let draftProfiles = [];
 
+/** Executable basenames that can be tmux-backed. Asked for once; the rule lives in tmux.js. */
+let tmuxShells = [];
+
+/** PowerShell and cmd have no tmux to reach, so the toggle is meaningless for them. */
+function canTmux(exe) {
+  return tmuxShells.includes(basename(String(exe || '')).toLowerCase());
+}
+
 function renderProfileEditor() {
   const rows = draftProfiles.map((p, i) => {
     const row = document.createElement('div');
@@ -666,6 +674,30 @@ function renderProfileEditor() {
     args.placeholder = 'args';
     args.addEventListener('input', () => { draftProfiles[i].args = splitArgs(args.value); });
 
+    // tmux-backed: the tab holds a client and the work lives in the tmux server, so it
+    // survives Terman restarting or crashing.
+    const tmuxWrap = document.createElement('label');
+    tmuxWrap.className = 'p-tmux';
+    const tmuxBox = document.createElement('input');
+    tmuxBox.type = 'checkbox';
+    if (!draftProfiles[i].tmux) draftProfiles[i].tmux = { enabled: false, session: '' };
+    tmuxBox.checked = !!draftProfiles[i].tmux.enabled;
+    tmuxBox.addEventListener('change', () => { draftProfiles[i].tmux.enabled = tmuxBox.checked; });
+    tmuxWrap.append(tmuxBox, document.createTextNode('tmux'));
+
+    // Re-check on every keystroke rather than re-rendering the row, which would take the
+    // focus out of the field being typed into.
+    const syncTmuxEnabled = () => {
+      const ok = canTmux(draftProfiles[i].exe);
+      tmuxBox.disabled = !ok;
+      tmuxWrap.classList.toggle('disabled', !ok);
+      tmuxWrap.title = ok
+        ? 'Run this profile inside tmux, so its terminals survive Terman restarting or crashing.'
+        : 'Only bash, sh, zsh and wsl.exe can be tmux-backed — there is no tmux for this shell to reach.';
+    };
+    syncTmuxEnabled();
+    exe.addEventListener('input', syncTmuxEnabled);
+
     const del = document.createElement('button');
     del.className = 'mini-btn p-del';
     del.textContent = '\u00d7';
@@ -676,13 +708,13 @@ function renderProfileEditor() {
       renderDefaultProfileSelect();
     });
 
-    row.append(name, exe, args, del);
+    row.append(name, exe, args, tmuxWrap, del);
     return row;
   });
 
   const hint = document.createElement('p');
   hint.className = 'profile-hint';
-  hint.textContent = 'Name \u00b7 executable \u00b7 arguments. Edit settings.json directly to set a working directory or environment variables per profile.';
+  hint.textContent = 'Name \u00b7 executable \u00b7 arguments \u00b7 tmux. Tick tmux to keep a profile\u2019s terminals alive across a Terman restart or crash. Edit settings.json directly to set a working directory, environment variables, or a tmux session name per profile.';
 
   sui.profileList.replaceChildren(hint, ...rows);
 }
@@ -821,6 +853,7 @@ document.getElementById('btn-add-profile').addEventListener('click', async () =>
     args: [],
     cwd: '',
     env: {},
+    tmux: { enabled: false, session: '' },
   });
   renderProfileEditor();
   renderDefaultProfileSelect();
@@ -973,6 +1006,8 @@ const ready = (async function init() {
   if (booted) return;
   booted = true;
   settings = await api.getSettings();
+  // Fixed for the life of the process, so fetch it once rather than per settings open.
+  try { tmuxShells = await api.tmuxShells(); } catch { tmuxShells = []; }
   applyHotkeyHints();
   refreshSshPill();
   renderTabs();

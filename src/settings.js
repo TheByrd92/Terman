@@ -103,6 +103,16 @@ function normalize(raw) {
       args: Array.isArray(p.args) ? p.args.map(String) : [],
       cwd: typeof p.cwd === 'string' ? p.cwd : '',
       env: (p.env && typeof p.env === 'object' && !Array.isArray(p.env)) ? { ...p.env } : {},
+      // Off unless asked for: wrapping a shell in tmux changes how tabs are named and
+      // how they are closed, so it is never something a profile acquires by accident.
+      // `session` overrides the name stem, which defaults to the profile's name.
+      tmux: (() => {
+        const t = (p.tmux && typeof p.tmux === 'object') ? p.tmux : {};
+        return {
+          enabled: t.enabled === true,
+          session: typeof t.session === 'string' ? t.session : '',
+        };
+      })(),
     }));
   if (profiles.length === 0) profiles = d.profiles;
 

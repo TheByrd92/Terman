@@ -94,28 +94,49 @@ jobs:
           "version=$v" >> $env:GITHUB_OUTPUT
           "Building version $v"
 
-      - name: Build portable exe
+      # All three win targets from package.json: installer, portable, plain zip.
+      - name: Build all Windows targets
         # No signing certificate in CI; without this electron-builder goes looking
         # for one and the log fills with noise.
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npm run dist:portable
+        run: npm run dist
 
-      - name: Verify the exe was produced
+      # Every artifact must exist and be plausibly sized. A missing installer used to
+      # be invisible here because only the portable exe was ever checked.
+      - name: Verify the artifacts were produced
         shell: pwsh
         run: |
-          $exe = Get-ChildItem dist -Filter 'Terman-*-Portable.exe' -ErrorAction SilentlyContinue
-          if (-not $exe) { throw 'No portable exe in dist/ - build produced nothing' }
-          if ($exe.Length -lt 50MB) { throw "Suspiciously small: $($exe.Length) bytes" }
-          "{0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB)
+          $v = '${{ steps.meta.outputs.version }}'
+          # Exact names, not Terman-*: a wildcard happily matches a stale artifact from
+          # a different version and reports success for a file this run never built.
+          $expected = @(
+            "Terman-$v-Setup.exe",
+            "Terman-$v-Portable.exe",
+            "Terman-$v-win-x64.zip"
+          )
+          $problems = @()
+          foreach ($name in $expected) {
+            $f = Get-Item (Join-Path 'dist' $name) -ErrorAction SilentlyContinue
+            if (-not $f) { $problems += "$name - not produced"; continue }
+            if ($f.Length -lt 50MB) {
+              $problems += "$name - suspiciously small ($($f.Length) bytes)"
+              continue
+            }
+            "OK  {0} ({1:N1} MB)" -f $f.Name, ($f.Length / 1MB)
+          }
+          if ($problems) { throw "Build output is wrong:`n" + ($problems -join "`n") }
 
       # Downloadable from the run's summary page. upload-artifact always zips,
-      # so this lands as a .zip containing the exe.
-      - name: Upload portable exe
+      # so this lands as a .zip containing all three files.
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Terman-${{ steps.meta.outputs.version }}-Portable
-          path: dist/Terman-*-Portable.exe
+          name: Terman-${{ steps.meta.outputs.version }}-Windows
+          path: |
+            dist/Terman-${{ steps.meta.outputs.version }}-Setup.exe
+            dist/Terman-${{ steps.meta.outputs.version }}-Portable.exe
+            dist/Terman-${{ steps.meta.outputs.version }}-win-x64.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -143,6 +164,11 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.meta.outputs.version }}
-          files: dist/Terman-*-Portable.exe
+          # Named exactly, one per line: with fail_on_unmatched_files a target that
+          # silently stops building fails the release instead of shipping short.
+          files: |
+            dist/Terman-${{ steps.meta.outputs.version }}-Setup.exe
+            dist/Terman-${{ steps.meta.outputs.version }}-Portable.exe
+            dist/Terman-${{ steps.meta.outputs.version }}-win-x64.zip
           generate_release_notes: true
           fail_on_unmatched_files: true

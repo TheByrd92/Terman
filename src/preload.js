@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('terman', {
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),
   confirm: (opts) => ipcRenderer.invoke('dialog:confirm', opts),
   hotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
+  tmuxShells: () => ipcRenderer.invoke('tmux:shells'),
 
   onPtyData: (fn) => on('pty:data', fn),
   onPtyExit: (fn) => on('pty:exit', fn),

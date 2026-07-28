@@ -19,32 +19,68 @@ npm install
 npm run dist
 ```
 
-That writes two things to `dist\`:
+That writes three things to `dist\`:
 
 | Artifact | What it is |
 | --- | --- |
-| `Terman-<version>-Setup.exe` | Installer. Asks where to put it, makes Start Menu + desktop shortcuts, registers an entry in Add/Remove Programs. |
-| `Terman-<version>-Portable.exe` | Single self-contained exe. No install, no registry, no shortcuts — runs from a USB stick or any folder. |
+| `Terman-<version>-Setup.exe` | **Installer — use this one.** Asks where to put it, makes Start Menu + desktop shortcuts, registers an entry in Add/Remove Programs. |
+| `Terman-<version>-win-x64.zip` | The app as a plain folder. Extract anywhere and run `Terman.exe` — no installer, no registry, and unlike the portable exe it never unpacks to `%TEMP%`. |
+| `Terman-<version>-Portable.exe` | Single self-contained exe. Convenient from a USB stick, but see the caveat below. |
 
-The version in both filenames is whatever `package.json` says.
+The version in all three filenames is whatever `package.json` says.
 
 The installer is deliberately not one-click: it shows a directory page so you choose the
-install folder, and it installs per-user (no admin prompt) by default. Uninstalling leaves
-`%APPDATA%\terman\settings.json` alone, so reinstalling keeps your profiles.
+install folder, and it installs per-user (no admin prompt) by default. Picking a folder that
+needs admin rights (anywhere under `C:\Program Files`) prompts for elevation. Uninstalling
+leaves `%APPDATA%\terman\settings.json` alone, so reinstalling keeps your profiles.
 
-`npm run dist:installer` and `npm run dist:portable` build just one target;
-`npm run pack` produces an unpacked folder in `dist\win-unpacked\` without any installer.
+To install unattended, to an exact directory:
+
+```
+Terman-1.0.2-Setup.exe /S /D=C:\Tools\Terman
+```
+
+`/S` is silent and `/D=` sets the install directory. NSIS requires `/D=` to be **last** on
+the line and the path to be **unquoted** — even if it contains spaces. Add `/allusers` for
+a machine-wide install (needs elevation) or `/currentuser` to force a per-user one.
+
+`npm run dist:installer`, `npm run dist:portable`, and `npm run dist:zip` build just one
+target; `npm run pack` produces an unpacked folder in `dist\win-unpacked\` with no packaging
+step at all.
+
+### A caveat about the portable exe
+
+The portable exe is a self-extracting archive: every launch unpacks the whole app to a
+folder under `%TEMP%` and runs it from there. Two consequences worth knowing.
+
+It is slower to start, since it re-extracts ~110 MB each time. More importantly, the
+extraction folder is wiped and rewritten on each launch (`RMDir /r` in electron-builder's
+`portable.nsi`). By default that folder has one fixed name per build, shared by every
+launch — so starting a second copy deletes the files out from under the first one while it
+is still running. Files the running process has open survive; the rest do not, which leaves
+a half-populated folder and errors like `ENOENT ... resources\app.asar.unpacked\...
+package.json`.
+
+`"unpackDirName": true` in the `portable` block of `package.json` is what prevents that: it
+gives each launch its own private folder that Windows cleans up afterwards. **The
+electron-builder docs have this option backwards** — they say `false` means "unique per
+launch", but in the implementation `false` and *unset* take the same branch and both get a
+fixed per-build name. Only a non-string truthy value skips the define and reaches the
+per-launch path. Don't "fix" it to `false`.
+
+If you hit that error anyway, close every Terman process, delete its folder under `%TEMP%`,
+and relaunch. Or just use the installer or the zip, neither of which extracts to `%TEMP%`.
 
 ### Downloading a build from CI
 
-`.github/workflows/build-portable.yml` builds the portable exe on every push to `main`
+`.github/workflows/build-portable.yml` builds all three artifacts on every push to `main`
 (and on pull requests) using a `windows-latest` runner — a Windows host is required, since
 this packages a Windows Electron app plus a `win32-x64` native PTY.
 
 **Per-push builds** land as a workflow artifact. Open the run under the repo's *Actions*
-tab and download `Terman-<version>-Portable` from the summary page. GitHub zips artifacts
-automatically, so you get a `.zip` with the exe inside. Kept 90 days. Downloading an
-artifact requires being signed in to GitHub.
+tab and download `Terman-<version>-Windows` from the summary page. GitHub zips artifacts
+automatically, so you get a `.zip` containing the installer, the portable exe, and the
+app zip. Kept 90 days. Downloading an artifact requires being signed in to GitHub.
 
 ### Versioning
 
@@ -78,11 +114,14 @@ same run rather than by the tag push. And the push is a plain fast-forward: if y
 `main` while a build is running, the tag step fails loudly rather than rebasing a release
 commit behind your back. Re-run it and it'll bump from wherever `main` now is.
 
-The workflow caches the Electron download (~270 MB) keyed on `package-lock.json`, builds
-with `CSC_IDENTITY_AUTO_DISCOVERY=false` since there's no signing certificate in CI, and
-fails loudly if the exe is missing or implausibly small rather than uploading nothing. To
-ship the installer as well, add `dist/Terman-*-Setup.exe` to the upload paths and switch
-the build step to `npm run dist`.
+The workflow caches the Electron download (~270 MB) keyed on `package-lock.json`, and builds
+with `CSC_IDENTITY_AUTO_DISCOVERY=false` since there's no signing certificate in CI.
+
+Before uploading anything it checks all three artifacts exist and are plausibly sized, by
+**exact filename** rather than a `Terman-*` glob — a wildcard happily matches a leftover
+artifact from another version and reports success for a file the run never built. The
+release step lists the three files individually too, so with `fail_on_unmatched_files` a
+target that quietly stops building fails the release instead of shipping an incomplete set.
 
 The app icon is generated, not checked in as binary art — `npm run icon` regenerates
 `build\icon.ico` from `build\make-icon.ps1`.
@@ -276,6 +315,88 @@ login shell.
 
 Terman names tabs after the tmux session you're attached to, including over ssh — so a
 wall of identical `ssh` tabs becomes `web-01: deploy (logs)`, `db-02: migrate (psql)`.
+
+tmux is also the only way a terminal survives Terman itself dying — see below.
+
+### Recoverable sessions
+
+A ConPTY belongs to the process that created it, and its pipes are anonymous. When Terman
+dies the shell it was hosting loses its console and exits, and a new Terman has no handle
+to reattach with. **No amount of work on Terman's side changes that** — the shell has to
+live somewhere other than Terman's own PTY.
+
+tmux is that somewhere. Turn it on for a profile and the PTY holds a tmux *client*, while
+the work lives in the tmux *server*, which daemonizes out of Terman's process tree
+entirely. Terman crashing takes the client; the session keeps running.
+
+Turn it on per profile: **Settings → Profiles**, and tick the **tmux** box on the row. The
+box is greyed out for profiles that can't be wrapped (see the table below) with a tooltip
+saying why, rather than hidden — so the column doesn't jump around while you edit an exe
+path, and so it's obvious the option exists at all.
+
+The same thing in `settings.json`, which is also the only place to set a session name:
+
+```json
+{
+  "id": "msys-ucrt64",
+  "name": "UCRT64",
+  "tmux": { "enabled": true, "session": "" }
+}
+```
+
+`session` overrides the session-name stem, which otherwise comes from the profile name.
+
+**Recovery needs no button.** `new-session -A` attaches if the session exists and creates
+it if it doesn't, so opening a tab on that profile lands back on the work you left. Open a
+second tab on the same profile and you get `UCRT64-2`, because two clients on one session
+would mirror each other's screen instead of giving you a second terminal. The rule is:
+reuse the lowest-numbered session Terman owns that has no client attached, otherwise take
+the next free number.
+
+Which profiles can do this:
+
+| Profile | Wrapped |
+| --- | --- |
+| MSYS2 / Git Bash / any `bash`, `sh`, `zsh` | yes, automatically |
+| `wsl.exe` | yes, automatically (`-- sh -c`) |
+| PowerShell, `cmd` | no — there's no tmux to reach |
+| `ssh` | not automatically; put `tmux new -A -s main` in the profile's args, as above |
+
+`ssh` is left out on purpose: the command has to land after the host argument, whose
+position varies with the flags you use, and guessing wrong is worse than you writing it.
+
+#### What happens when
+
+| Event | The tmux session |
+| --- | --- |
+| You close the tab | **Killed.** The one action that means "I'm done with this". Killing only the PTY would leave the session running with nothing pointing at it. |
+| You quit Terman | **Kept**, so the next launch resumes it. |
+| Terman crashes | **Kept.** The crash handler's `taskkill /T` takes the client, and tmux's server is not in that tree — verified, not assumed. |
+| You close a window | **Kept**, same as quitting. |
+| Next launch | Terman-owned sessions that are unattached *and* contain nothing but an idle shell are reaped. Anything with real work in it is left for you. |
+
+Sessions Terman creates are tagged with a session option, `@terman 1`, and the reaper only
+ever touches tagged ones. That's deliberately not a name prefix: renaming a session is how
+you rename a tmux-backed tab, and a prefix would either break on rename or put your own
+hand-made sessions at risk.
+
+#### It changes how tabs are named
+
+Three things to know, because this interacts with the tab naming above.
+
+`set-titles` defaults to **off** in tmux, and a wrapped tab with it off is *quieter* than an
+unwrapped one — tmux swallows the inner program's title and emits nothing. So Terman turns
+it on itself at attach time, along with `set-titles-string`. Both are set with
+`set-option -t <session>`, scoped to that session only; your global tmux config is left
+exactly as it was.
+
+**The session name becomes the tab label**, since the label is `#S (#W)` with the `#h: `
+prefix stripped. That's why the stem is the profile name and not a counter — and it means
+the name is now durable, where an ordinary tab's name dies with the window.
+
+**Renaming works differently in a wrapped tab.** `printf '\033]0;deploy\007'` won't stick,
+because tmux rewrites the title on its own schedule. Use `tmux rename-session deploy`
+instead — which renames the session and the tab together, and survives a restart.
 
 ### Setup
 
@@ -472,10 +593,11 @@ src/
   preload.js            contextBridge surface (contextIsolation on, no nodeIntegration)
   settings.js           load/normalize/save + first-run profile detection
   ssh-agent.js          agent lifecycle, SSH_AUTH_SOCK, key-count status
+  tmux.js               tmux-backed sessions: wrapping, ownership, reaping
   renderer/             tab bar, tab groups, xterm panes, open picker, settings dialog
 build/
   make-icon.ps1         generates icon.ico
-dist/                   build output (installer, portable exe) - not source
+dist/                   build output (installer, zip, portable exe) - not source
 ```
 
 Packaging keeps `@lydell/node-pty` outside the asar archive (`asarUnpack`), because ConPTY
@@ -506,9 +628,35 @@ it has to reach the shell.
 The title bar carries the version (`Terman 1.0.1`), which is the quickest way to tell which
 build a window is, and comes from `package.json` via `app.getVersion()`.
 
+## When something goes wrong
+
+Terman spawns shells, and those shells spawn their own children. Anything that ends a
+terminal takes the **whole process tree** down with it, not just the shell Terman started —
+otherwise a build or an `ssh` you launched in a tab would be reparented and keep running
+with nothing on screen attached to it. On Windows that's a `taskkill /T /F`; the pid is only
+chased while the shell is known to be alive, since once node-pty reports the exit Windows is
+free to hand that pid to somebody else.
+
+A crash in the main process gets the same treatment. Electron's default reaction is a modal
+that leaves the process alive behind it, which for an app like this is the worst available
+option: the terminals keep running, and every parked instance holds its own files open. So
+Terman takes that handler over — an uncaught exception (or unhandled rejection) kills the
+terminal trees and the ssh-agent, shows what happened, and exits instead of lingering.
+
+The one thing a crash deliberately does **not** take down is a tmux session, since that's
+the only kind of terminal that can outlive it — see
+[Recoverable sessions](#recoverable-sessions). tmux's server double-forks out of the
+launching shell's process tree, so `taskkill /T` can't reach it.
+
+If Terman can't load its terminal backend it says so in those words, and names the folder it
+was reading, rather than surfacing a raw module-resolution stack about a missing
+`package.json`. That failure means an incomplete copy of the app — see the portable-exe
+caveat under [Installing](#a-caveat-about-the-portable-exe).
+
 ## Notes
 
-- Closing a window kills every PTY it owns; quitting kills the ssh-agent with it.
+- Closing a window kills every PTY it owns, and their children; quitting kills the ssh-agent with it.
+- tmux-backed tabs are the exception: their sessions survive everything except closing the tab.
 
 ## License
 

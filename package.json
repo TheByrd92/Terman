@@ -13,6 +13,7 @@
     "dist": "npm run icon && electron-builder --win",
     "dist:installer": "npm run icon && electron-builder --win nsis",
     "dist:portable": "npm run icon && electron-builder --win portable",
+    "dist:zip": "npm run icon && electron-builder --win zip",
     "pack": "npm run icon && electron-builder --dir"
   },
   "dependencies": {
@@ -33,6 +34,7 @@
       "output": "dist",
       "buildResources": "build"
     },
+    "artifactName": "Terman-${version}-win-x64.${ext}",
     "files": [
       "src/**/*",
       "!**/*.map",
@@ -57,6 +59,12 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },
@@ -73,7 +81,8 @@
       "deleteAppDataOnUninstall": false
     },
     "portable": {
-      "artifactName": "Terman-${version}-Portable.${ext}"
+      "artifactName": "Terman-${version}-Portable.${ext}",
+      "unpackDirName": true
     }
   }
 }
