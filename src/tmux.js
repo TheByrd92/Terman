@@ -74,13 +74,31 @@ function supports(profile) {
 }
 
 /**
+ * Where tmux lives on both supported runners: MSYS2 ships /usr/bin/tmux, and every
+ * distro WSL runs puts it on one of these.
+ *
+ * Management commands run with login=false, which means /etc/profile never runs and PATH
+ * is whatever Electron inherited. Launched from a shortcut that contains no MSYS2 at all,
+ * so `tmux` came back "command not found" (exit 127) -- and since run() reports a failure
+ * as empty output, listSessions saw an empty server, chooseSession handed out the bare
+ * name stem every time, and `new-session -A` attached each new tab to the one session
+ * that already existed. That is the bug where every terminal is the same tmux.
+ *
+ * The interactive tab hid it: that one spawns with -l, so it gets a real PATH.
+ * $PATH stays on the end so an unusual install location still resolves.
+ */
+const TMUX_PATH = '/usr/bin:/usr/local/bin:/bin';
+
+/**
  * Run a tmux management command and return its stdout.
  *
  * Deliberately synchronous: these are short, they gate spawning a tab, and threading a
- * promise through PTY creation buys nothing when the command takes milliseconds.
+ * promise through PTY creation buys nothing when the command takes milliseconds. That is
+ * also why it can't just use a login shell to fix PATH -- sourcing a login profile costs
+ * most of a second, and these run while the user waits for a tab.
  */
 function run(profile, tmuxArgs, { timeout = 5000 } = {}) {
-  const runner = posixRunner(profile, `tmux ${tmuxArgs}`, { login: false });
+  const runner = posixRunner(profile, `PATH="${TMUX_PATH}:$PATH" tmux ${tmuxArgs}`, { login: false });
   if (!runner) return { ok: false, out: '', err: 'profile cannot run tmux' };
 
   let res;
@@ -97,8 +115,16 @@ function run(profile, tmuxArgs, { timeout = 5000 } = {}) {
 
   const out = (res.stdout || '').trim();
   const err = (res.stderr || '').trim();
+
   // `no server running` is the normal answer to "what is there" before anything exists,
-  // not a failure worth reporting.
+  // not a failure worth reporting. Anything else is: a management command that fails
+  // looks exactly like an empty tmux server to every caller here, and silence is what
+  // let "tmux: command not found" masquerade as "no sessions" and put every tab on the
+  // same session. If this ever prints, that is the class of bug to suspect.
+  if (res.status !== 0 && err && !/no server running/i.test(err)) {
+    console.error(`[terman] tmux ${tmuxArgs.split(' ')[0]} failed (${res.status}): ${err}`);
+  }
+
   return { ok: res.status === 0, out, err };
 }
 
@@ -117,10 +143,16 @@ function listSessions(profile) {
   if (!out) return [];
   return out.split(/\r?\n/).map((line) => {
     const [name, owner, attached] = line.split('\t');
+    // session_attached is a CLIENT COUNT, not a flag -- a session two clients are
+    // mirroring reports "2". Testing it against '1' read that as *unattached*, so
+    // chooseSession offered it up as an orphan and every later tab piled another
+    // client onto the same screen, which only pushed the count further from '1'.
+    const clients = Number(String(attached || '').trim()) || 0;
     return {
       name: (name || '').trim(),
       owned: String(owner || '').trim() === '1',
-      attached: String(attached || '').trim() === '1',
+      clients,
+      attached: clients > 0,
     };
   }).filter((s) => s.name);
 }
@@ -142,22 +174,50 @@ function paneCommands(profile) {
 const IDLE_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'fish', 'tmux', '']);
 
 /**
+ * The name every session for this profile is built from -- its numbered variants are
+ * `stem`, `stem-2`, `stem-3`. Settings can override it per profile; the profile name is
+ * the default.
+ */
+function sessionStem(profile) {
+  return sanitizeName((profile && profile.tmux && profile.tmux.session)
+    || (profile && profile.name) || 'terman');
+}
+
+/**
+ * Whether a session name belongs to this profile.
+ *
+ * Profiles sharing an MSYS2 installation share one tmux server, so UCRT64, MINGW64 and
+ * MSYS all see each other's sessions in `list-sessions`. Only the name stem says which
+ * profile a session came from, and reattaching a MINGW64 session under the UCRT64
+ * profile would hand it the wrong MSYSTEM.
+ */
+function ownsName(profile, name) {
+  const stem = sessionStem(profile);
+  return name === stem || name.startsWith(`${stem}-`);
+}
+
+/**
  * Pick the session a new tab on this profile should land on.
  *
  * An owned, unattached session for this profile is work left behind by a previous run,
  * so reuse it -- that is the whole recovery path. Otherwise take the next free number,
  * because two clients on one session would mirror each other's screens rather than give
  * the user a second terminal.
+ *
+ * `claimed` is the set of sessions this Terman's live tabs are already holding, and it
+ * is not redundant with the `attached` check: attachCommand creates the session with
+ * `new-session -d` and only then attaches, so between those two steps tmux truthfully
+ * reports zero clients. Without `claimed`, a second tab opened inside that window sees
+ * a brand-new session as an orphan and adopts it.
  */
-function chooseSession(profile, sessions) {
-  const stem = sanitizeName((profile && profile.tmux && profile.tmux.session)
-    || (profile && profile.name) || 'terman');
+function chooseSession(profile, sessions, claimed = new Set()) {
+  const stem = sessionStem(profile);
 
-  const mine = sessions.filter((s) => s.owned && (s.name === stem || s.name.startsWith(`${stem}-`)));
+  const mine = sessions.filter((s) => s.owned && !claimed.has(s.name) && ownsName(profile, s.name));
   const resumable = mine.find((s) => !s.attached);
   if (resumable) return { name: resumable.name, resumed: true };
 
-  const taken = new Set(sessions.map((s) => s.name));
+  const taken = new Set([...sessions.map((s) => s.name), ...claimed]);
   if (!taken.has(stem)) return { name: stem, resumed: false };
   for (let i = 2; i < 500; i++) {
     const candidate = `${stem}-${i}`;
@@ -177,6 +237,9 @@ function chooseSession(profile, sessions) {
 function attachCommand(session) {
   const s = sanitizeName(session);
   return [
+    // Same PATH guard as run(): this one usually spawns a login shell and so finds tmux
+    // on its own, but a profile whose args don't include -l would not.
+    `export PATH="${TMUX_PATH}:$PATH"`,
     `tmux new-session -d -A -s ${s}`,
     `tmux set-option -t ${s} ${OWNER_OPT} 1`,
     `tmux set-option -t ${s} set-titles on`,
@@ -188,12 +251,22 @@ function attachCommand(session) {
 /**
  * Rewrite a spawn so it runs inside tmux. Returns null when the profile can't, so the
  * caller falls back to spawning it directly rather than failing the tab.
+ *
+ * `session` names the session to land on outright, which is how the startup restore
+ * reopens a specific piece of left-behind work. Left empty, chooseSession decides.
  */
-function wrap(profile) {
+function wrap(profile, { claimed = new Set(), session = '' } = {}) {
   if (!supports(profile)) return null;
 
-  const sessions = listSessions(profile);
-  const { name, resumed } = chooseSession(profile, sessions);
+  let name;
+  let resumed;
+  if (session) {
+    name = sanitizeName(session);
+    resumed = true;
+  } else {
+    ({ name, resumed } = chooseSession(profile, listSessions(profile), claimed));
+  }
+
   const runner = posixRunner(profile, attachCommand(name), { login: true });
   if (!runner) return null;
 
@@ -208,24 +281,40 @@ function killSession(profile, session) {
 }
 
 /**
+ * Terman-owned sessions with nobody attached, split by whether there is real work in
+ * them. `busy` is what a previous run left behind and what startup reopens a tab for;
+ * `idle` is a bare shell nobody would miss.
+ *
+ * Both answers come from one pair of tmux calls on purpose: restore and reap disagreeing
+ * about a session would mean reaping one while a tab was opening on it.
+ */
+function orphans(profile, claimed = new Set()) {
+  const busy = [];
+  const idle = [];
+
+  const candidates = listSessions(profile)
+    .filter((s) => s.owned && !s.attached && !claimed.has(s.name));
+  if (!candidates.length) return { busy, idle };
+
+  const panes = paneCommands(profile);
+  for (const s of candidates) {
+    const cmds = panes.get(s.name) || [];
+    (cmds.some((c) => !IDLE_COMMANDS.has(c)) ? busy : idle).push(s.name);
+  }
+  return { busy, idle };
+}
+
+/**
  * Drop Terman-owned sessions that have nothing left in them.
  *
  * Quitting Terman deliberately leaves sessions running so the next launch can resume
- * them, which means empty ones would otherwise pile up forever. Only sessions Terman
- * created, with no client attached and nothing but an idle shell inside, are reaped --
- * a session with real work in it is left for the user to come back to.
+ * them, which means empty ones would otherwise pile up forever. A session with real work
+ * in it is left for the user to come back to -- startup turns those into tabs instead.
  */
-function reap(profile) {
-  const sessions = listSessions(profile).filter((s) => s.owned && !s.attached);
-  if (!sessions.length) return [];
-
-  const panes = paneCommands(profile);
+function reap(profile, claimed = new Set()) {
   const killed = [];
-  for (const s of sessions) {
-    const cmds = panes.get(s.name) || [];
-    const busy = cmds.some((c) => !IDLE_COMMANDS.has(c));
-    if (busy) continue;
-    if (killSession(profile, s.name)) killed.push(s.name);
+  for (const name of orphans(profile, claimed).idle) {
+    if (killSession(profile, name)) killed.push(name);
   }
   return killed;
 }
@@ -235,8 +324,11 @@ module.exports = {
   wrap,
   listSessions,
   killSession,
+  orphans,
   reap,
   sanitizeName,
+  sessionStem,
+  ownsName,
   posixRunner,
   chooseSession,
   OWNER_OPT,

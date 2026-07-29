@@ -346,12 +346,24 @@ The same thing in `settings.json`, which is also the only place to set a session
 
 `session` overrides the session-name stem, which otherwise comes from the profile name.
 
-**Recovery needs no button.** `new-session -A` attaches if the session exists and creates
-it if it doesn't, so opening a tab on that profile lands back on the work you left. Open a
-second tab on the same profile and you get `UCRT64-2`, because two clients on one session
-would mirror each other's screen instead of giving you a second terminal. The rule is:
-reuse the lowest-numbered session Terman owns that has no client attached, otherwise take
-the next free number.
+**Recovery needs no button.** On launch Terman looks for sessions it owns that nobody is
+attached to and that still have work running in them, and reopens a tab on each — so a
+crash comes back as the terminals it had rather than one empty prompt. Sessions holding
+nothing but an idle shell are reaped instead, so the tabs you get back are the ones worth
+getting back.
+
+Opening a tab by hand works the same way: `new-session -A` attaches if the session exists
+and creates it if it doesn't, so it lands back on work you left behind. Once there's
+nothing left to resume you get `UCRT64-2`, `UCRT64-3` and so on, because two clients on one
+session would mirror each other's screen instead of giving you a second terminal. The rule
+is: reuse the lowest-numbered session Terman owns that has no client attached, otherwise
+take the next free number.
+
+Terman tracks which session each live tab holds, and that's load-bearing rather than
+bookkeeping. A session is created detached and attached a moment later, and in that gap
+tmux honestly reports zero clients — so tmux's own view can't tell "nobody wants this" from
+"a tab is starting on it". Without Terman's own record, two tabs opened in quick succession
+both saw an orphan and piled onto the same session.
 
 Which profiles can do this:
 
@@ -373,7 +385,7 @@ position varies with the flags you use, and guessing wrong is worse than you wri
 | You quit Terman | **Kept**, so the next launch resumes it. |
 | Terman crashes | **Kept.** The crash handler's `taskkill /T` takes the client, and tmux's server is not in that tree — verified, not assumed. |
 | You close a window | **Kept**, same as quitting. |
-| Next launch | Terman-owned sessions that are unattached *and* contain nothing but an idle shell are reaped. Anything with real work in it is left for you. |
+| Next launch | Terman-owned sessions that are unattached *and* still have work running get a tab reopened on them. Ones holding nothing but an idle shell are reaped. |
 
 Sessions Terman creates are tagged with a session option, `@terman 1`, and the reaper only
 ever touches tagged ones. That's deliberately not a name prefix: renaming a session is how

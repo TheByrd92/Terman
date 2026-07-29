@@ -1011,7 +1011,20 @@ const ready = (async function init() {
   applyHotkeyHints();
   refreshSshPill();
   renderTabs();
+
+  // Reattach to whatever a previous run left running before opening anything new, so a
+  // crash or a restart comes back as the terminals it had instead of one empty tab.
+  // Sequential on purpose: each tab claims its session in the main process, and firing
+  // them off together would have them racing for the same one.
+  try {
+    for (const { profileId, session } of await api.tmuxRestorable()) {
+      await newTerminal({ profileId, tmuxSession: session });
+    }
+  } catch (err) {
+    console.error('[terman] tmux restore failed', err);
+  }
+
   // Only open the startup terminal if nothing raced ahead of us (e.g. a hotkey
-  // fired while settings were still loading).
+  // fired while settings were still loading) and there was nothing to restore.
   if (tabs.length === 0) await newTerminal();
 }());

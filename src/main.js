@@ -78,6 +78,12 @@ let sshAgent = null;
 /** id -> { proc, profileName, exe, alive, wc } -- wc is the window owning the tab */
 const sessions = new Map();
 let nextId = 1;
+/**
+ * tmux sessions already promised to a renderer for restore. Offered once per launch and
+ * never cleared: a second window booting must not be told to reattach to work the first
+ * window is already showing.
+ */
+const restoreOffered = new Set();
 /** Populated after each hotkey (re)registration so the UI can warn about conflicts. */
 let hotkeyStatus = { newDefault: null, pickExe: null, enabled: true };
 
@@ -212,9 +218,25 @@ function resolveCwd(requested, profile) {
 }
 
 /**
+ * Sessions that are spoken for, and so must not be handed to another tab.
+ *
+ * tmux alone cannot answer this. It reports a session as having zero clients for the
+ * moment between `new-session -d` and its client finishing the attach, so its view can't
+ * distinguish "nobody wants this" from "a tab is starting on it right now" -- only
+ * Terman knows. `restoreOffered` covers the same gap for sessions handed to a renderer
+ * that hasn't spawned its tab yet.
+ */
+function tmuxClaims() {
+  const claimed = new Set(restoreOffered);
+  for (const s of sessions.values()) if (s.tmuxSession) claimed.add(s.tmuxSession);
+  return claimed;
+}
+
+/**
  * Spawn a PTY. `spec` is either { profileId } or an ad-hoc { exe, args, cwd }
- * (used by the pick-an-exe hotkey). `wc` is the window that owns the tab -- its
- * output goes only there, and it dies with that window.
+ * (used by the pick-an-exe hotkey). `tmuxSession` pins a tmux-backed tab to one
+ * specific session, which is how the startup restore reattaches. `wc` is the window
+ * that owns the tab -- its output goes only there, and it dies with that window.
  */
 function createSession(spec = {}, wc = null) {
   const profile = spec.profileId ? settings.profile(spec.profileId) : settings.defaultProfile();
@@ -249,7 +271,11 @@ function createSession(spec = {}, wc = null) {
   let tmuxSession = null;
   let resumed = false;
   if (!spec.exe && profile && profile.tmux && profile.tmux.enabled) {
-    const wrapped = tmux.wrap(profile);
+    const wrapped = tmux.wrap(profile, {
+      claimed: tmuxClaims(),
+      // Set only by the startup restore, which has already picked the session.
+      session: spec.tmuxSession || '',
+    });
     if (wrapped) {
       spawnExe = wrapped.exe;
       spawnArgs = wrapped.args;
@@ -356,14 +382,17 @@ function killEverything() {
  * are reaped -- work you left behind is what this whole feature is for.
  *
  * Deferred off the startup path: each profile costs a `tmux list-sessions`, and the first
- * window should paint before Terman goes looking for housekeeping.
+ * window should paint before Terman goes looking for housekeeping. The delay also puts
+ * this after the restore scan, and passing the claims makes that ordering unnecessary
+ * rather than load-bearing -- a session a tab is opening on is never a reap candidate.
  */
 function reapTmuxSessions() {
   setTimeout(() => {
+    const claimed = tmuxClaims();
     for (const profile of settings.data.profiles) {
       if (!profile.tmux || !profile.tmux.enabled) continue;
       try {
-        const killed = tmux.reap(profile);
+        const killed = tmux.reap(profile, claimed);
         if (killed.length) debug(`[terman] reaped empty tmux sessions: ${killed.join(', ')}`);
       } catch (err) {
         console.error(`[terman] tmux reap failed for ${profile.id}:`, err.message);
@@ -509,6 +538,37 @@ ipcMain.handle('hotkey:status', () => hotkeyStatus);
 
 /** Which shells can be tmux-backed, so the settings UI can grey out the rest. */
 ipcMain.handle('tmux:shells', () => tmux.SHELL_BASENAMES);
+
+/**
+ * Work a previous run left behind, as one entry per tab the renderer should reopen.
+ *
+ * This is what makes a crash actually recoverable. The sessions kept running, but until
+ * now nothing pointed at them: you had to open tabs one at a time and hope each adopted
+ * the session you wanted. Marking them offered as they go out means two windows booting
+ * at once can't both be sent the same session.
+ */
+ipcMain.handle('tmux:restorable', () => {
+  const claimed = tmuxClaims();
+  const out = [];
+  for (const profile of settings.data.profiles) {
+    if (!profile.tmux || !profile.tmux.enabled) continue;
+    try {
+      // Filtered by name stem: profiles sharing an MSYS2 install share a tmux server,
+      // so each one's list includes the others' sessions. Reattaching a MINGW64 session
+      // under the UCRT64 profile would give it the wrong MSYSTEM.
+      for (const session of tmux.orphans(profile, claimed).busy) {
+        if (!tmux.ownsName(profile, session)) continue;
+        out.push({ profileId: profile.id, session });
+        claimed.add(session);
+        restoreOffered.add(session);
+      }
+    } catch (err) {
+      console.error(`[terman] tmux restore scan failed for ${profile.id}:`, err.message);
+    }
+  }
+  if (out.length) debug(`[terman] tmux restorable: ${out.map((r) => r.session).join(', ')}`);
+  return out;
+});
 
 // ---------------------------------------------------------------- ssh agent
 

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('terman', {
   confirm: (opts) => ipcRenderer.invoke('dialog:confirm', opts),
   hotkeyStatus: () => ipcRenderer.invoke('hotkey:status'),
   tmuxShells: () => ipcRenderer.invoke('tmux:shells'),
+  tmuxRestorable: () => ipcRenderer.invoke('tmux:restorable'),
 
   onPtyData: (fn) => on('pty:data', fn),
   onPtyExit: (fn) => on('pty:exit', fn),
